@@ -1,0 +1,22 @@
+# Minimal firmware that includes a generated IR code set — the CI compile target.
+# `generated/sony_bravia.yaml` is produced at build time by running the codegen
+# Docker image; it is NOT committed (see .gitignore). Compiling this proves the
+# generated YAML is valid ESPHome.
+esphome:
+  name: ir-codegen-test
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+# One transmitter; the generated buttons target it via transmitter_id: ir_tx.
+remote_transmitter:
+  id: ir_tx
+  pin: GPIO12          # e.g. M5 Atom's built-in IR LED
+  carrier_duty_percent: 50%
+
+packages:
+  sony_bravia: !include generated/sony_bravia.yaml

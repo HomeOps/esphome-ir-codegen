@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Pinned Flipper-IRDB source — reproducibility comes from the ref (locked
+# design decision). Bump deliberately; never float to a moving branch in CI.
+env:
+  FLIPPER_REF: d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d
+  FLIPPER_PATH: TVs/Sony/Sony_Bravia.ir
+  IMAGE: esphome-ir-codegen:ci
+
+jobs:
+  lint-test:
+    name: Lint + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff pytest
+      - run: ruff check .
+      - run: pytest -q
+
+  firmware:
+    name: Sony Bravia → firmware (real Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Build the codegen image (the real Docker image the add-on ships).
+      - uses: docker/setup-buildx-action@v3
+      - name: Build codegen image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 2. Run the image to generate the Sony Bravia component from the pinned ref.
+      - name: Generate Sony Bravia IR component
+        run: |
+          mkdir -p firmware-test/generated
+          docker run --rm "$IMAGE" \
+            --ref "$FLIPPER_REF" --path "$FLIPPER_PATH" \
+            --tx ir_tx --prefix "Bravia" \
+            | tee firmware-test/generated/sony_bravia.yaml
+          test -s firmware-test/generated/sony_bravia.yaml
+          # Fail if nothing was generated (e.g. all protocols unsupported).
+          grep -q "platform: template" firmware-test/generated/sony_bravia.yaml
+
+      # 3. Compile real firmware that includes the generated component.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-esp32
+      - run: pip install esphome
+      - name: Compile firmware (esphome)
+        run: esphome compile firmware-test/device.yaml
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-sony-bravia
+          path: .esphome/build/**/*.bin
+          if-no-files-found: warn

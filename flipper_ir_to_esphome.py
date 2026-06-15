@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flipper .ir -> ESPHome remote_transmitter YAML (prototype / baby step).
+"""Flipper .ir -> ESPHome remote_transmitter YAML (prototype).
 
 The transformation core for the planned Home Assistant add-on: given a *pinned
 Flipper-IRDB git ref* and a path within that repo, fetch the `.ir` file and emit
@@ -10,22 +10,25 @@ Design decisions (locked):
   * The generator runs at ESPHome *compile* time and may hit the network live.
   * Naming/dedup is intentionally minimal for now.
 
-Protocol coverage (baby step):
-  * type: raw                       -> remote_transmitter.transmit_raw   (always correct)
-  * type: parsed, NEC / NECext / NEC42(ext) -> remote_transmitter.transmit_nec
-  * everything else                 -> emitted as a `# TODO unsupported` comment
+Protocol coverage:
+  * type: raw                               -> transmit_raw   (always correct)
+  * type: parsed NEC / NECext / NEC42(ext)  -> transmit_nec
+  * type: parsed SIRC / SIRC15 / SIRC20     -> transmit_sony
+  * everything else                         -> `# TODO unsupported` comment
 
 VERIFY generated parsed codes against a live `remote_receiver` capture before
-trusting them (the receiver dump prints the same 16-bit NEC words this emits).
+trusting them — compiling only proves the YAML is *valid*, not that the code is
+the *correct* one for your device.
 """
 
 import argparse
-import re
 import sys
 import urllib.request
 
 FLIPPER_REPO = "Lucaslhm/Flipper-IRDB"
 RAW_BASE = "https://raw.githubusercontent.com"
+
+SONY_NBITS = {"SIRC": 12, "SIRC15": 15, "SIRC20": 20}
 
 
 def fetch(ref, path):
@@ -55,9 +58,12 @@ def parse_ir(text):
     return entries
 
 
-def _le_bytes(field):
-    """'04 00 00 00' -> [0x04, 0x00, 0x00, 0x00]."""
-    return [int(b, 16) for b in field.split()]
+def _le(field):
+    """'04 03 00 00' -> integer 0x0304 (little-endian)."""
+    out = 0
+    for i, byte in enumerate(field.split()):
+        out |= int(byte, 16) << (8 * i)
+    return out
 
 
 def emit_raw(entry):
@@ -70,16 +76,24 @@ def emit_raw(entry):
 
 
 def emit_nec(entry, ext=False):
-    addr = _le_bytes(entry["address"])
-    cmd = _le_bytes(entry["command"])
+    addr = _le(entry["address"])
+    cmd = _le(entry["command"]) & 0xFF
     if ext:
-        # NECext: full 16-bit address, no inversion check.
-        address = addr[0] | (addr[1] << 8)
+        address = addr & 0xFFFF              # NECext: full 16-bit address
     else:
-        # Standard NEC: ESPHome's 16-bit word is addr | (~addr << 8).
-        address = addr[0] | ((addr[0] ^ 0xFF) << 8)
-    command = cmd[0] | ((cmd[0] ^ 0xFF) << 8)
+        a = addr & 0xFF
+        address = a | ((a ^ 0xFF) << 8)      # NEC: addr | (~addr << 8)
+    command = cmd | ((cmd ^ 0xFF) << 8)
     return ("transmit_nec", {"address": f"0x{address:04X}", "command": f"0x{command:04X}"})
+
+
+def emit_sony(entry):
+    nbits = SONY_NBITS[entry["protocol"]]
+    address = _le(entry["address"])
+    command = _le(entry["command"]) & 0x7F   # SIRC command is 7 bits
+    # ESPHome sends LSB-first: 7-bit command, then address.
+    data = command | (address << 7)
+    return ("transmit_sony", {"data": f"0x{data:X}", "nbits": nbits})
 
 
 def _button_name(prefix, name):
@@ -90,7 +104,7 @@ def generate(entries, ref, src, tx_id, prefix):
     out = [
         f"# Generated from {FLIPPER_REPO}@{ref}",
         f"#   path: {src}",
-        "# Prototype (flipper_ir_to_esphome.py) — supports raw + NEC/NECext.",
+        "# Prototype (flipper_ir_to_esphome.py) — raw + NEC/NECext + Sony SIRC.",
         "# VERIFY parsed codes against a live remote_receiver capture.",
         "button:",
     ]
@@ -104,6 +118,8 @@ def generate(entries, ref, src, tx_id, prefix):
                 action, args = emit_raw(entry)
             elif typ == "parsed" and proto in ("NEC", "NECext", "NEC42", "NEC42ext"):
                 action, args = emit_nec(entry, ext=proto.endswith("ext"))
+            elif typ == "parsed" and proto in SONY_NBITS:
+                action, args = emit_sony(entry)
             else:
                 skipped.append((name, proto or typ or "unknown"))
                 continue
@@ -121,7 +137,10 @@ def generate(entries, ref, src, tx_id, prefix):
             code = ", ".join(str(x) for x in args["code"])
             out.append(f"          carrier_frequency: {args['carrier_frequency']}")
             out.append(f"          code: [{code}]")
-        else:
+        elif action == "transmit_sony":
+            out.append(f"          data: {args['data']}")
+            out.append(f"          nbits: {args['nbits']}")
+        else:  # transmit_nec
             out.append(f"          address: {args['address']}")
             out.append(f"          command: {args['command']}")
 
@@ -131,7 +150,9 @@ def generate(entries, ref, src, tx_id, prefix):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--file", help="local .ir file")
     source.add_argument("--path", help="path within the Flipper-IRDB repo")
