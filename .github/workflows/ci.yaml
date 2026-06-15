@@ -42,14 +42,16 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Start the add-on exactly as Home Assistant would: just the source repo
-      # (default), no path/out. --ref only pins the DB commit for a stable CI.
+      # (default), no path/out. --ref only pins the flipper commit for stable CI.
+      # The service builds one repo per adapter: flipper.git + ha-ir.git.
       - name: Start codegen service (path-less)
         run: |
           docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" --serve --ref "$FLIPPER_REF"
           ok=
-          # First start generates the whole DB (~9k components) — give it time.
+          # First start generates the whole flipper DB (~9k) + ha-ir — give it time.
           for _ in $(seq 1 180); do
-            if git ls-remote http://localhost:9418/default.git >/dev/null 2>&1; then
+            if git ls-remote http://localhost:9418/flipper.git >/dev/null 2>&1 \
+               && git ls-remote http://localhost:9418/ha-ir.git >/dev/null 2>&1; then
               ok=1; break
             fi
             sleep 2
@@ -59,8 +61,8 @@ jobs:
           fi
           echo "service is up"; docker logs ir-codegen | tail -3
 
-      # ESPHome clones http://localhost:9418/default.git and selects the remote
-      # via files: [TVs/Sony/Sony_Bravia.yaml] — the only place a remote is named.
+      # Compile one device per adapter: flipper.git (Sony Bravia) and ha-ir.git
+      # (Vizio TV) — each clones its repo and `files:` selects the component.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -70,23 +72,28 @@ jobs:
           path: ~/.platformio
           key: pio-${{ runner.os }}-esp32
       - run: pip install esphome
-      - name: Compile firmware (pulls from default.git on the live service)
+      - name: Compile firmware — flipper adapter (Sony Bravia)
         run: esphome compile firmware-test/device.yaml
+      - name: Compile firmware — ha-ir adapter (Vizio TV)
+        run: esphome compile firmware-test/device-ha-ir.yaml
 
-      - name: Capture the Sony Bravia component (the useful artifact)
+      - name: Capture the generated components (the useful artifacts)
         run: |
           rm -rf _generated _artifact; mkdir -p _artifact
-          git clone -q http://localhost:9418/default.git _generated
-          cp "_generated/TVs/Sony/Sony_Bravia.yaml" "_artifact/Sony_Bravia.yaml"
-          echo "----- Sony_Bravia -----"; cat _artifact/Sony_Bravia.yaml
+          git clone -q http://localhost:9418/flipper.git _generated/flipper
+          git clone -q http://localhost:9418/ha-ir.git _generated/ha-ir
+          cp "_generated/flipper/TVs/Sony/Sony_Bravia.yaml" "_artifact/flipper-Sony_Bravia.yaml"
+          cp "_generated/ha-ir/vizio/tv.yaml" "_artifact/ha-ir-vizio-tv.yaml"
+          echo "----- flipper: Sony_Bravia -----"; cat _artifact/flipper-Sony_Bravia.yaml
+          echo "----- ha-ir: vizio/tv -----";      cat _artifact/ha-ir-vizio-tv.yaml
 
       - name: Stop codegen service
         if: always()
         run: docker rm -f ir-codegen || true
 
-      - name: Upload generated component
+      - name: Upload generated components
         uses: actions/upload-artifact@v4
         with:
-          name: ir-component
+          name: ir-components
           path: _artifact/*.yaml
           if-no-files-found: error

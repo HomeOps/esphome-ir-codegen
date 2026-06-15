@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""Flipper .ir -> ESPHome remote_transmitter YAML.
+"""IR code sets -> ESPHome remote_transmitter YAML, served as git repos.
 
 Two modes:
   * one-shot CLI : print the generated ESPHome YAML for a Flipper file.
-  * --serve      : run a tiny **git service** — generate the component, commit it
-                   into a bare repo, and serve it over the git:// protocol so an
-                   ESPHome build pulls it with `packages: url: git://host/irdb.git`.
-                   This is the add-on "posing as a repo": ESPHome clones from the
-                   live container at compile time.
+  * --serve      : run a smart-HTTP **git service** that builds one bare repo per
+                   *adapter*, so an ESPHome build pulls a component with
+                   `packages: url: http://host/<adapter>.git, files: [<path>]`.
 
-Given a *pinned Flipper-IRDB git ref* + a path, fetch the `.ir` file and emit one
-ESPHome `button` per IR signal.
+An *adapter* is a source of device code sets; the shared infrared-protocols
+encoder turns every command into transmit_raw, so adapters differ only in source
+and path layout:
+  * flipper.git -> Flipper-IRDB `.ir` files (path mirrors the tree, e.g.
+                   TVs/Sony/Sony_Bravia.yaml)
+  * ha-ir.git   -> infrared-protocols' own curated code sets (e.g. vizio/tv.yaml)
 
 Design decisions (locked):
-  * Reproducibility comes from the Flipper ref itself (--ref), not a local copy.
-  * The generator runs at ESPHome *compile* time and may hit the network live.
-  * Naming/dedup is intentionally minimal for now.
+  * Reproducibility: the flipper adapter pins a Flipper-IRDB ref (--ref).
+  * The service builds at startup; ESPHome clones at *compile* time.
+  * Adding an adapter is just another `<name>.git` under the cache dir.
 
 Protocol coverage:
   * type: raw                            -> transmit_raw (direct passthrough)
@@ -166,7 +168,29 @@ def _slug(text):
     return f"ir_{s}" if s else "ir_unnamed"
 
 
+def _append_button(out, bname, carrier, code, tx_id, repeat):
+    """Append one template button that fires a transmit_raw. Shared by every
+    adapter — after encoding, all output is transmit_raw, so this is the only
+    button renderer. `repeat` adds the transmit-layer repeat (library frames are
+    single); a Flipper raw capture passes False (authoritative, sent as-is)."""
+    code_str = ", ".join(str(x) for x in code)
+    out.append("  - platform: template")
+    out.append(f"    id: {_slug(bname)}")
+    out.append(f'    name: "{bname}"')
+    out.append("    on_press:")
+    out.append("      - remote_transmitter.transmit_raw:")
+    if tx_id:
+        out.append(f"          transmitter_id: {tx_id}")
+    out.append(f"          carrier_frequency: {carrier}")
+    out.append(f"          code: [{code_str}]")
+    if repeat:
+        out.append("          repeat:")
+        out.append(f"            times: {PARSED_REPEAT_TIMES}")
+        out.append(f"            wait_time: {PARSED_REPEAT_WAIT}")
+
+
 def generate(entries, ref, src, tx_id, prefix):
+    """flipper adapter: render a component from parsed Flipper `.ir` entries."""
     out = [
         f"# Generated from {FLIPPER_REPO}@{ref}",
         f"#   path: {src}",
@@ -189,28 +213,37 @@ def generate(entries, ref, src, tx_id, prefix):
         if result is None:
             skipped.append((name, proto or typ or "unknown"))
             continue
-        action, args = result
-
-        bname = _button_name(prefix, name)
-        code = ", ".join(str(x) for x in args["code"])
-        out.append("  - platform: template")
-        out.append(f"    id: {_slug(bname)}")
-        out.append(f'    name: "{bname}"')
-        out.append("    on_press:")
-        out.append(f"      - remote_transmitter.{action}:")
-        if tx_id:
-            out.append(f"          transmitter_id: {tx_id}")
-        out.append(f"          carrier_frequency: {args['carrier_frequency']}")
-        out.append(f"          code: [{code}]")
-        # Library frames are single — repeat them at the transmit layer. A raw
-        # capture is authoritative (may already include repeats), so send as-is.
-        if typ != "raw":
-            out.append("          repeat:")
-            out.append(f"            times: {PARSED_REPEAT_TIMES}")
-            out.append(f"            wait_time: {PARSED_REPEAT_WAIT}")
+        _action, args = result
+        # A raw capture is authoritative; library-encoded parsed frames are
+        # single and need a transmit-layer repeat.
+        _append_button(out, _button_name(prefix, name), args["carrier_frequency"],
+                       args["code"], tx_id, repeat=(typ != "raw"))
 
     for name, why in skipped:
         out.append(f"# TODO unsupported: {name} ({why})")
+    return "\n".join(out) + "\n"
+
+
+def generate_from_commands(named_commands, src, tx_id=None):
+    """ha-ir adapter: render a component from infrared-protocols `Command`s.
+
+    `named_commands` is an iterable of (name, Command). Each is a single library
+    frame -> transmit_raw with a transmit-layer repeat. Duplicate button ids are
+    dropped (first wins)."""
+    out = [
+        f"# Generated from infrared-protocols code set: {src}",
+        "# Curated codes encoded by infrared-protocols -> transmit_raw.",
+        "# VERIFY codes against a live remote_receiver capture.",
+        "button:",
+    ]
+    seen = set()
+    for name, command in named_commands:
+        bid = _slug(name)
+        if bid in seen:
+            continue
+        seen.add(bid)
+        _append_button(out, name, command.modulation, command.get_raw_timings(),
+                       tx_id, repeat=True)
     return "\n".join(out) + "\n"
 
 
@@ -285,17 +318,42 @@ def _default_branch(repo):
         return "main"
 
 
-def _build_mirror(cache, repo, branch):
-    """Generate the WHOLE database as one repo: every `.ir` path holds its
-    generated ESPHome component (not the raw IR). Served as `default.git`, so a
-    device clones once and all devices share that clone. Returns the count.
+def _make_bare_repo(cache, name, populate):
+    """Build one adapter's bare repo `<name>.git` under `cache`.
+
+    `populate(work)` writes the adapter's `.yaml` components into `work` and
+    returns the count. git-http-backend serves any bare repo under the cache
+    dir, so adding an adapter is just another `<name>.git`. Returns the count.
     """
+    import subprocess
+    import tempfile
+
+    work = tempfile.mkdtemp(prefix=f"irdb-{name}-")
+    count = populate(work)
+
+    def git(*args):
+        subprocess.run(["git", "-C", work, *args], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "codegen@local")
+    git("config", "user.name", "ir-codegen")
+    git("add", "-A")
+    git("commit", "-q", "--allow-empty", "-m", f"generated {count} components")
+    bare = os.path.join(cache, f"{name}.git")
+    subprocess.run(["git", "clone", "-q", "--bare", work, bare], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return count
+
+
+def _populate_flipper(work, repo, branch):
+    """flipper adapter: clone Flipper-IRDB and mirror each `.ir` to a generated
+    `.yaml` component, preserving the tree (TVs/Sony/Sony_Bravia.yaml)."""
     import re as _re
     import subprocess
     import tempfile
 
     src = tempfile.mkdtemp(prefix="irdb-src-")
-    work = tempfile.mkdtemp(prefix="irdb-mirror-")
     url = f"https://github.com/{repo}.git"
 
     def run(*args):
@@ -328,36 +386,92 @@ def _build_mirror(cache, repo, branch):
             with open(outpath, "w", encoding="utf-8") as handle:
                 handle.write(component)
             count += 1
-
-    def git(*args):
-        subprocess.run(["git", "-C", work, *args], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    git("init", "-q", "-b", "main")
-    git("config", "user.email", "codegen@local")
-    git("config", "user.name", "ir-codegen")
-    git("add", "-A")
-    git("commit", "-q", "-m", f"generated {count} components")
-    bare = os.path.join(cache, "default.git")
-    subprocess.run(["git", "clone", "-q", "--bare", work, bare], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return count
 
 
-def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
-    """Serve the whole database as one repo (`default.git`) over smart HTTP.
+def _ha_ir_codesets():
+    """Yield (relpath, [(name, Command), ...]) for every infrared-protocols code
+    set — e.g. 'vizio/tv' -> [('POWER', NECCommand(...)), ...]. Each `codes`
+    submodule exposes Enums with a `.to_command()`; we enumerate their members.
 
-    Every `.ir` path holds its generated ESPHome component, pre-built at startup,
-    so a device clones once and all devices share that clone:
+    The library's brand dirs (codes/vizio/…) have no __init__.py (namespace
+    packages), which pkgutil.walk_packages won't descend into — so we walk the
+    package directory on disk and import each module by name instead.
+    """
+    import enum
+    import importlib
+
+    import infrared_protocols.codes as codes_pkg
+    from infrared_protocols.commands import Command
+
+    base = codes_pkg.__name__
+    for root in list(codes_pkg.__path__):
+        for dirpath, _dirs, files in os.walk(root):
+            for filename in sorted(files):
+                if not filename.endswith(".py") or filename == "__init__.py":
+                    continue
+                relmod = os.path.relpath(os.path.join(dirpath, filename), root)[:-3]
+                relmod = relmod.replace(os.sep, ".")
+                modname = f"{base}.{relmod}"
+                try:
+                    mod = importlib.import_module(modname)
+                except Exception:
+                    continue
+                named, seen = [], set()
+                for attr in vars(mod).values():
+                    if not (isinstance(attr, type) and issubclass(attr, enum.Enum)):
+                        continue
+                    if attr.__module__ != modname or not hasattr(attr, "to_command"):
+                        continue
+                    for member in attr:
+                        if member.name in seen:
+                            continue
+                        try:
+                            command = member.to_command()
+                        except Exception:
+                            continue
+                        if not isinstance(command, Command):
+                            continue
+                        seen.add(member.name)
+                        named.append((member.name, command))
+                if named:
+                    yield relmod.replace(".", "/"), named
+
+
+def _populate_ha_ir(work):
+    """ha-ir adapter: expose infrared-protocols' own curated code sets as
+    components at `<brand>/<type>.yaml` (e.g. vizio/tv.yaml)."""
+    count = 0
+    for rel, named in _ha_ir_codesets():
+        component = generate_from_commands(named, rel)
+        outpath = os.path.join(work, rel + ".yaml")
+        os.makedirs(os.path.dirname(outpath), exist_ok=True)
+        with open(outpath, "w", encoding="utf-8") as handle:
+            handle.write(component)
+        count += 1
+    return count
+
+
+def serve_http(port=9418, repo=FLIPPER_REPO, ref=None, adapters=("flipper", "ha-ir")):
+    """Serve each adapter as its own bare repo over smart HTTP.
+
+    An adapter is a *source* of device code sets; the shared infrared-protocols
+    encoder turns every command into transmit_raw. Each adapter is one repo:
+
+        flipper.git  -> Flipper-IRDB (`repo`), files: [TVs/Sony/Sony_Bravia.yaml]
+        ha-ir.git    -> infrared-protocols code sets, files: [vizio/tv.yaml]
+
+    A device clones one adapter and `files:` selects the remote:
 
         packages:
           x:
-            url: http://<host>:<port>/default.git
+            url: http://<host>:<port>/flipper.git
             ref: main
-            files: ["TVs/Sony/Sony_Bravia.ir"]
+            files: [TVs/Sony/Sony_Bravia.yaml]
 
-    Only knob: the source `repo` (a fork works as-is). `ref` is optional (CI pins
-    it; the add-on uses the repo's default branch).
+    `repo` is the flipper source (a fork works as-is). `ref` pins the flipper
+    commit (CI does; the add-on uses the default branch). `adapters` selects
+    which repos to build.
     """
     import http.server
     import subprocess
@@ -366,8 +480,15 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
 
     branch = ref or _default_branch(repo)
     cache = tempfile.mkdtemp(prefix="irdb-http-")
-    print(f"building default.git from {repo}@{branch} (first start takes a few minutes) …", flush=True)
-    count = _build_mirror(cache, repo, branch)
+    counts = {}
+    if "flipper" in adapters:
+        print(f"building flipper.git from {repo}@{branch} (first start takes a few minutes) …", flush=True)
+        counts["flipper"] = _make_bare_repo(cache, "flipper", lambda w: _populate_flipper(w, repo, branch))
+    if "ha-ir" in adapters:
+        print("building ha-ir.git from the infrared-protocols code sets …", flush=True)
+        counts["ha-ir"] = _make_bare_repo(cache, "ha-ir", _populate_ha_ir)
+    if not counts:
+        raise SystemExit(f"no known adapters in {adapters!r} (expected: flipper, ha-ir)")
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -420,7 +541,8 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
         def log_message(self, *args):
             pass
 
-    print(f"git-http: http://0.0.0.0:{port}/default.git  ({count} components, {repo}@{branch})", flush=True)
+    summary = ", ".join(f"{name}.git ({n})" for name, n in counts.items())
+    print(f"git-http: http://0.0.0.0:{port}/  serving {summary}  [flipper={repo}@{branch}]", flush=True)
     http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
@@ -431,7 +553,8 @@ def main(argv=None):
     parser.add_argument("--serve", action="store_true", help="run a git:// service ESPHome can pull from")
     parser.add_argument("--from-options", dest="from_options", help="read --serve options from a JSON file (Home Assistant add-on)")
     parser.add_argument("--port", type=int, default=9418, help="listen port for --serve")
-    parser.add_argument("--repo", default=FLIPPER_REPO, help="source Flipper-IRDB repo or fork (path-less --serve)")
+    parser.add_argument("--repo", default=FLIPPER_REPO, help="flipper adapter source repo or fork (path-less --serve)")
+    parser.add_argument("--adapters", default="flipper,ha-ir", help="comma-separated adapters to serve (flipper, ha-ir)")
     parser.add_argument("--out", help="served component path (default: the --path with .yaml, dirs preserved)")
     parser.add_argument("--file", help="local .ir file")
     parser.add_argument("--path", help="path within the Flipper-IRDB repo")
@@ -445,11 +568,16 @@ def main(argv=None):
 
         with open(args.from_options, encoding="utf-8") as handle:
             opts = json.load(handle)
-        # Path-less: the only knob is the source repo (a fork works as-is).
+        # The flipper adapter's source is `repo`; ha-ir needs none. `adapters`
+        # selects which repos to serve (default: both).
+        adapters = opts.get("adapters") or ["flipper", "ha-ir"]
+        if isinstance(adapters, str):
+            adapters = [a.strip() for a in adapters.split(",") if a.strip()]
         serve_http(
             port=int(opts.get("port", 9418)),
             repo=opts.get("repo") or FLIPPER_REPO,
             ref=opts.get("ref"),
+            adapters=tuple(adapters),
         )
         return 0
 
@@ -459,8 +587,9 @@ def main(argv=None):
             out = args.out or _mirror_out(args.path)
             serve(port=args.port, ref=args.ref or "main", path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
         else:
-            # Path-less lazy git-over-HTTP service (the add-on).
-            serve_http(port=args.port, repo=args.repo, ref=args.ref)
+            # Path-less smart-HTTP service (the add-on) — one repo per adapter.
+            adapters = tuple(a.strip() for a in args.adapters.split(",") if a.strip())
+            serve_http(port=args.port, repo=args.repo, ref=args.ref, adapters=adapters)
         return 0
 
     if not args.file and not args.path:

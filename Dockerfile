@@ -1,9 +1,10 @@
-# Codegen image — Flipper-IRDB -> ESPHome transformer.
+# Codegen image — IR code sets -> ESPHome components, served as git repos.
 #
 #   serve:  docker run -p 9418:9418 IMAGE --serve            (the add-on)
-#           -> builds the whole DB into default.git and serves it over smart
-#              HTTP. A device clones http://<host>:9418/default.git once and
-#              picks files: [<Flipper/path>.ir]. Only knob: --repo (a fork).
+#           -> builds one bare repo per adapter (flipper.git + ha-ir.git) and
+#              serves them over smart HTTP. A device clones
+#              http://<host>:9418/<adapter>.git and picks files: [<path>.yaml].
+#              Knobs: --repo (flipper source/fork), --adapters.
 #   CLI:    docker run IMAGE --path <Cat>/<Brand>/<Model>.ir  (print one component)
 # Python 3.14 is required by the infrared-protocols dependency.
 FROM python:3.14-slim

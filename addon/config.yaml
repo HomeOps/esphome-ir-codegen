@@ -1,7 +1,7 @@
 name: ESPHome IR Codegen
 version: 0.1.2
 slug: esphome_ir_codegen
-description: Serve Flipper-IRDB IR codes to ESPHome as on-demand git packages
+description: Serve IR code sets to ESPHome as git packages (flipper + ha-ir adapters)
 url: https://github.com/HomeOps/esphome-ir-codegen
 arch:
   - aarch64
@@ -15,5 +15,7 @@ ports_description:
   9418/tcp: git-over-HTTP — ESPHome packages clone from here
 options:
   repo: Lucaslhm/Flipper-IRDB
+  adapters: flipper,ha-ir
 schema:
   repo: str
+  adapters: str?

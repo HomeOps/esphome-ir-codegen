@@ -1,8 +1,9 @@
 # CI compile target — an M5 Atom Lite whose front button toggles a Sony Bravia.
 #
-# The add-on serves the whole Flipper-IRDB as one git repo (default.git), where
-# each .ir path holds its generated ESPHome component as .yaml. ESPHome clones it
-# once and `files:` selects the remote — the only place a remote is named.
+# The add-on serves each adapter as its own git repo. This device uses the
+# flipper adapter (flipper.git): each Flipper-IRDB .ir path holds its generated
+# ESPHome component as .yaml. ESPHome clones it once and `files:` selects the
+# remote — the only place a remote is named. (See device-ha-ir.yaml for ha-ir.)
 esphome:
   name: ir-codegen-test
 
@@ -27,7 +28,7 @@ remote_transmitter:
 # (it defines id: ir_power, etc.). One repo, cloned once and shared across devices.
 packages:
   sony_bravia:
-    url: http://localhost:9418/default.git
+    url: http://localhost:9418/flipper.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]
     refresh: 1d                # clone once, then reuse — never 0s (re-clones every build)
