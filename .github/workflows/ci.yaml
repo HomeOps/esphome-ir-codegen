@@ -20,8 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: pip install ruff pytest
+          python-version: "3.14"        # required by infrared-protocols
+      - run: pip install ruff pytest -r requirements.txt
       - run: ruff check .
       - run: pytest -q
 

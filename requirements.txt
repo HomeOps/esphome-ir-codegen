@@ -1,0 +1,7 @@
+# Runtime dependencies for the codegen.
+#
+# infrared-protocols provides tested IR protocol encoders (NEC, Sony, RC5,
+# Samsung32, Sharp, Kaseikyo, Marantz…) used as a fallback for protocols
+# ESPHome can't transmit natively — we render those to transmit_raw via the
+# library's get_raw_timings(). Requires Python >= 3.14.
+infrared-protocols>=6.0.1,<7
