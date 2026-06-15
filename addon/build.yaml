@@ -1,0 +1,5 @@
+# Build the add-on from the published codegen image (multi-arch). This avoids
+# duplicating the script — the add-on only adds the HA option-reading entrypoint.
+build_from:
+  aarch64: ghcr.io/homeops/esphome-ir-codegen:latest
+  amd64: ghcr.io/homeops/esphome-ir-codegen:latest

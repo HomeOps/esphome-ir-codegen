@@ -230,6 +230,7 @@ def main(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--serve", action="store_true", help="run a git:// service ESPHome can pull from")
+    parser.add_argument("--from-options", dest="from_options", help="read --serve options from a JSON file (Home Assistant add-on)")
     parser.add_argument("--port", type=int, default=9418, help="git daemon port for --serve")
     parser.add_argument("--out", help="component filename served by --serve (default: derived from --path)")
     parser.add_argument("--file", help="local .ir file")
@@ -238,6 +239,25 @@ def main(argv=None):
     parser.add_argument("--tx", dest="tx_id", help="remote_transmitter id (omit if you only have one)")
     parser.add_argument("--prefix", default="", help='button name prefix, e.g. "TV"')
     args = parser.parse_args(argv)
+
+    if args.from_options:
+        import json
+
+        with open(args.from_options, encoding="utf-8") as handle:
+            opts = json.load(handle)
+        path = opts.get("path") or None
+        if not path:
+            raise SystemExit("add-on option 'path' is required (e.g. TVs/Sony/Sony_Bravia.ir)")
+        out = opts.get("out") or (os.path.splitext(os.path.basename(path))[0].lower() + ".yaml")
+        serve(
+            port=int(opts.get("port", 9418)),
+            ref=opts.get("ref", "main"),
+            path=path,
+            out=out,
+            tx_id=opts.get("tx") or None,
+            prefix=opts.get("prefix", ""),
+        )
+        return 0
 
     if args.serve:
         if not args.path:

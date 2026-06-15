@@ -210,6 +210,29 @@ python flipper_ir_to_esphome.py \
 python flipper_ir_to_esphome.py --file Samsung_TV.ir --prefix TV
 ```
 
+## Install as a Home Assistant add-on
+
+The codegen ships as a Home Assistant add-on (this repo is also an add-on
+repository — see [`addon/`](addon/) and [`repository.yaml`](repository.yaml)):
+
+1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add
+   `https://github.com/HomeOps/esphome-ir-codegen`.
+2. Install **ESPHome IR Codegen**, then in **Configuration** set `ref` (a pinned
+   Flipper-IRDB commit) and `path` (e.g. `TVs/Sony/Sony_Bravia.ir`). Start it.
+3. Point ESPHome at it — codes are pulled at compile time, nothing stored:
+
+   ```yaml
+   packages:
+     tv:
+       url: git://<your-ha-host>:9418/irdb.git
+       ref: main
+       files: [TVs/Sony/Sony_Bravia.yaml]
+       refresh: 0s
+   ```
+
+The add-on image is built FROM the published GHCR image and just adds an
+options-reading entrypoint (no script duplication). Full usage: [`addon/DOCS.md`](addon/DOCS.md).
+
 ## CI: the Sony Bravia end-to-end test
 
 Every push and PR runs the real thing (`.github/workflows/ci.yaml`), exercising
