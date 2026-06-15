@@ -244,54 +244,87 @@ def _default_branch(repo):
         return "main"
 
 
-def _ensure_repo(cache, repo, branch, flipper_path):
-    """Generate (once) a bare git repo for <flipper_path> from <flipper_path>.ir."""
-    import subprocess
-    import tempfile
-
-    repodir = os.path.join(cache, flipper_path + ".git")
-    if os.path.isdir(repodir):
-        return
-    text = fetch(branch, flipper_path + ".ir", repo=repo)
-    yaml = generate(parse_ir(text), branch, flipper_path + ".ir", None, "")
-    work = tempfile.mkdtemp()
-    name = os.path.basename(flipper_path) + ".yaml"
-    with open(os.path.join(work, name), "w", encoding="utf-8") as handle:
-        handle.write(yaml)
-
-    def git(*args, cwd):
-        subprocess.run(["git", *args], cwd=cwd, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    git("init", "-q", "-b", "main", cwd=work)
-    git("config", "user.email", "codegen@local", cwd=work)
-    git("config", "user.name", "ir-codegen", cwd=work)
-    git("add", "-A", cwd=work)
-    git("commit", "-q", "-m", name, cwd=work)
-    os.makedirs(os.path.dirname(repodir), exist_ok=True)
-    subprocess.run(["git", "clone", "-q", "--bare", work, repodir], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    git("update-server-info", cwd=repodir)
-
-
-def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
-    """Lazy git-over-HTTP — the path-less add-on mode.
-
-    A device clones `http://<host>:<port>/<Flipper/path>.git`; the component is
-    generated on first request from `<path>.ir` in `repo`. The only knob is the
-    source repo, so pointing at a fork is trivial. `ref` is optional (defaults to
-    the repo's default branch); CI pins it for determinism.
+def _build_mirror(cache, repo, branch):
+    """Generate the WHOLE database as one repo: every `.ir` path holds its
+    generated ESPHome component (not the raw IR). Served as `default.git`, so a
+    device clones once and all devices share that clone. Returns the count.
     """
-    import http.server
     import re as _re
     import subprocess
     import tempfile
-    import threading
+
+    src = tempfile.mkdtemp(prefix="irdb-src-")
+    work = tempfile.mkdtemp(prefix="irdb-mirror-")
+    url = f"https://github.com/{repo}.git"
+
+    def run(*args):
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if _re.fullmatch(r"[0-9a-f]{7,40}", branch or ""):
+        run("git", "init", "-q", src)
+        run("git", "-C", src, "fetch", "--depth", "1", url, branch)
+        run("git", "-C", src, "checkout", "-q", "FETCH_HEAD")
+    else:
+        run("git", "clone", "-q", "--depth", "1", "--branch", branch, url, src)
+
+    count = 0
+    for root, _dirs, files in os.walk(src):
+        if ".git" in root.split(os.sep):
+            continue
+        for filename in files:
+            if not filename.endswith(".ir"):
+                continue
+            rel = os.path.relpath(os.path.join(root, filename), src)
+            try:
+                with open(os.path.join(root, filename), encoding="utf-8", errors="replace") as handle:
+                    component = generate(parse_ir(handle.read()), branch, rel, None, "")
+            except Exception:
+                continue
+            outpath = os.path.join(work, rel)
+            os.makedirs(os.path.dirname(outpath), exist_ok=True)
+            with open(outpath, "w", encoding="utf-8") as handle:
+                handle.write(component)
+            count += 1
+
+    def git(*args):
+        subprocess.run(["git", "-C", work, *args], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "codegen@local")
+    git("config", "user.name", "ir-codegen")
+    git("add", "-A")
+    git("commit", "-q", "-m", f"generated {count} components")
+    bare = os.path.join(cache, "default.git")
+    subprocess.run(["git", "clone", "-q", "--bare", work, bare], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return count
+
+
+def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
+    """Serve the whole database as one repo (`default.git`) over smart HTTP.
+
+    Every `.ir` path holds its generated ESPHome component, pre-built at startup,
+    so a device clones once and all devices share that clone:
+
+        packages:
+          x:
+            url: http://<host>:<port>/default.git
+            ref: main
+            files: ["TVs/Sony/Sony_Bravia.ir"]
+
+    Only knob: the source `repo` (a fork works as-is). `ref` is optional (CI pins
+    it; the add-on uses the repo's default branch).
+    """
+    import http.server
+    import subprocess
+    import tempfile
     from urllib.parse import urlsplit
 
     branch = ref or _default_branch(repo)
     cache = tempfile.mkdtemp(prefix="irdb-http-")
-    lock = threading.Lock()
+    print(f"building default.git from {repo}@{branch} (first start takes a few minutes) …", flush=True)
+    count = _build_mirror(cache, repo, branch)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -304,17 +337,6 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
 
         def _serve(self):
             split = urlsplit(self.path)
-            match = _re.match(r"^/(.+?\.git)(/.*)$", split.path)
-            if not match:
-                self.send_error(404)
-                return
-            try:
-                with lock:
-                    _ensure_repo(cache, repo, branch, match.group(1)[:-4])
-            except Exception as err:
-                self.send_error(404, f"cannot generate: {err}")
-                return
-
             # Smart HTTP via git-http-backend (supports shallow clones).
             env = {
                 **os.environ,
@@ -355,7 +377,7 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
         def log_message(self, *args):
             pass
 
-    print(f"git-http: http://0.0.0.0:{port}/<Flipper/path>.git  (source {repo}@{branch})", flush=True)
+    print(f"git-http: http://0.0.0.0:{port}/default.git  ({count} components, {repo}@{branch})", flush=True)
     http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 

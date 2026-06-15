@@ -30,8 +30,9 @@ remote_transmitter:
 
 packages:                          # <- codes pulled LIVE from the codegen service
   sony_bravia:
-    url: http://948146ed-esphome-ir-codegen:9418/TVs/Sony/Sony_Bravia.git
-    files: [Sony_Bravia.yaml]            # the URL path selects the remote
+    url: http://948146ed-esphome-ir-codegen:9418/default.git
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.ir]     # the Flipper path selects the remote
 
 binary_sensor:
   - platform: gpio
@@ -129,8 +130,9 @@ docker run -d -p 9418:9418 esphome-ir-codegen --serve   # path-less; add --repo 
 # in your ESPHome device config — clones a per-remote URL, generated on demand:
 packages:
   tv:
-    url: http://localhost:9418/TVs/Sony/Sony_Bravia.git
-    files: [Sony_Bravia.yaml]
+    url: http://localhost:9418/default.git
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.ir]
     refresh: 0s
 ```
 
@@ -167,7 +169,7 @@ as a repo:
 
 | Stage | Mechanism | Status |
 |-------|-----------|--------|
-| **Now** | `--serve` runs a lazy git-over-HTTP server; ESPHome clones `http://host:9418/<path>.git`, generated on demand. Add-on takes only `repo`. Exercised end-to-end in CI. | ✅ |
+| **Now** | `--serve` builds the whole DB into `default.git` and serves it over smart HTTP; ESPHome clones it once, selecting `files: [<path>.ir]`. Add-on takes only `repo`. Exercised end-to-end in CI. | ✅ |
 | Next | HTTP(S) / smart-HTTP serving so it works through reverse proxies and HA ingress. | ⏳ |
 | Later | On-demand generation per clone (vs. baked once at container start). | ⏳ |
 
@@ -176,8 +178,9 @@ ESPHome usage today:
 ```yaml
 packages:
   tv_codes:
-    url: http://<addon-host>:9418/TVs/Sony/Sony_Bravia.git   # path = the remote
-    files: [Sony_Bravia.yaml]                                # generated on demand
+    url: http://<addon-host>:9418/default.git    # one repo, cloned once
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.ir]             # the Flipper path = the remote
     refresh: 0s
 ```
 
@@ -219,8 +222,9 @@ repository — see [`addon/`](addon/) and [`repository.yaml`](repository.yaml)):
    ```yaml
    packages:
      tv:
-       url: http://<addon-host>:9418/TVs/Sony/Sony_Bravia.git
-       files: [Sony_Bravia.yaml]
+       url: http://<addon-host>:9418/default.git
+       ref: main
+       files: [TVs/Sony/Sony_Bravia.ir]
        refresh: 0s
    ```
 
@@ -233,7 +237,7 @@ Every push and PR runs the real thing (`.github/workflows/ci.yaml`), exercising
 the add-on **as a live service** — not a pre-generated file:
 
 1. **Build** the codegen Docker image.
-2. **Start** it as a running container serving `http://localhost:9418/<path>.git` (lazy, on demand)
+2. **Start** it as a running container serving `http://localhost:9418/default.git` (the whole DB)
    (the Sony Bravia component, from a pinned Flipper-IRDB ref).
 3. **Compile** real ESP32 firmware (`firmware-test/device.yaml`) whose
    `packages:` block **clones the component from that running container**. There

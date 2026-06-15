@@ -23,13 +23,14 @@ remote_transmitter:
   carrier_duty_percent: 50%
   non_blocking: true           # explicit (default changed in ESPHome 2025.11.0)
 
-# The URL path selects the remote (TVs/Sony/Sony_Bravia.ir -> .git); the repo
-# contains the generated component named after the model (Sony_Bravia.yaml).
+# `files:` selects the remote by its Flipper-IRDB path; that `.ir` entry holds
+# the generated ESPHome component (it defines id: ir_power, etc.). One repo,
+# cloned once and shared across devices.
 packages:
   sony_bravia:
-    url: http://localhost:9418/TVs/Sony/Sony_Bravia.git
+    url: http://localhost:9418/default.git
     ref: main
-    files: [Sony_Bravia.yaml]
+    files: [TVs/Sony/Sony_Bravia.ir]
     refresh: 0s
 
 # The Atom's front "clicker" button (G39) sends the Sony power toggle by pressing
