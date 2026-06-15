@@ -1,10 +1,9 @@
 name: publish-image
 
-# On a release (cut by release-please), build and push the multi-arch codegen
-# image to GHCR, tagged with the release version.
+# Manual re-publish only. Automatic publishing happens inside release-please.yaml
+# when a release is created (folding it there avoids the GITHUB_TOKEN
+# cross-workflow trigger limit — no PAT/secret required).
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -27,10 +26,7 @@ jobs:
         id: meta
         with:
           images: ghcr.io/homeops/esphome-ir-codegen
-          # `latest` is what the HA add-on's build.yaml builds FROM.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
       - uses: docker/build-push-action@v6
         with:
