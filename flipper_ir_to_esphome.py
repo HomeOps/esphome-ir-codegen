@@ -18,14 +18,17 @@ Design decisions (locked):
   * Naming/dedup is intentionally minimal for now.
 
 Protocol coverage:
-  * type: raw                               -> transmit_raw   (always correct)
-  * type: parsed NEC / NECext / NEC42(ext)  -> transmit_nec
-  * type: parsed SIRC / SIRC15 / SIRC20     -> transmit_sony
-  * everything else                         -> `# TODO unsupported` comment
+  * type: raw                            -> transmit_raw (direct passthrough)
+  * type: parsed (NEC/NECext, SIRC/15/20,
+    Samsung32, RC5/RC5X, Sharp)          -> transmit_raw, encoded by the
+                                            infrared-protocols library
+  * everything else                      -> `# TODO unsupported` comment
 
-VERIFY generated parsed codes against a live `remote_receiver` capture before
-trusting them — compiling only proves the YAML is *valid*, not that the code is
-the *correct* one for your device.
+We keep no protocol math of our own: parsed signals are encoded by the
+infrared-protocols library (NECCommand, SonyCommand, …) and emitted as the raw
+timings it returns. VERIFY generated parsed codes against a live
+`remote_receiver` capture before trusting them — compiling only proves the YAML
+is *valid*, not that the code is the *correct* one for your device.
 """
 
 import argparse
@@ -36,7 +39,15 @@ import urllib.request
 FLIPPER_REPO = "Lucaslhm/Flipper-IRDB"
 RAW_BASE = "https://raw.githubusercontent.com"
 
-SONY_NBITS = {"SIRC": 12, "SIRC15": 15, "SIRC20": 20}
+# Flipper SIRC variants -> SonyCommand address width (command is always 7-bit).
+SONY_ADDRESS_BITS = {"SIRC": 5, "SIRC15": 8, "SIRC20": 13}
+
+# The library returns ONE frame per command (by design — repetition is the
+# transmit layer's job, exactly as HA's IR proxy repeats it). In the ESPHome
+# compile path *we* are that layer, so library-encoded signals are sent with a
+# repeat: Sony SIRC and several others need ~3 frames before a device acts.
+PARSED_REPEAT_TIMES = 3
+PARSED_REPEAT_WAIT = "40ms"
 
 
 def fetch(ref, path, repo=FLIPPER_REPO):
@@ -83,37 +94,58 @@ def emit_raw(entry):
     return ("transmit_raw", {"carrier_frequency": freq, "code": code})
 
 
-def emit_nec(entry, ext=False):
+# Every parsed protocol is encoded by the infrared-protocols library — we keep no
+# protocol math of our own. The library returns raw timings, so every parsed
+# signal is emitted as transmit_raw. (Flipper `type: raw` is a direct passthrough;
+# there is no protocol to reuse there.)
+def _command_for(entry):
+    """Build an infrared_protocols Command for a Flipper *parsed* entry.
+
+    Returns a Command, or None if the protocol isn't one the library encodes.
+    Field values pass straight through so the library's own range checks reject
+    bad data (raising ValueError) rather than us emitting a wrong-but-plausible
+    code. Imports are local so the core stays importable without the library.
+    """
+    proto = entry.get("protocol", "")
     addr = _le(entry["address"])
-    cmd = _le(entry["command"]) & 0xFF
-    if ext:
-        address = addr & 0xFFFF              # NECext: full 16-bit address
-    else:
-        a = addr & 0xFF
-        address = a | ((a ^ 0xFF) << 8)      # NEC: addr | (~addr << 8)
-    command = cmd | ((cmd ^ 0xFF) << 8)
-    return ("transmit_nec", {"address": f"0x{address:04X}", "command": f"0x{command:04X}"})
+    cmd = _le(entry["command"])
+
+    if proto in ("NEC", "NECext"):
+        from infrared_protocols.commands.nec import NECCommand
+
+        # NECCommand selects standard (<=0xFF, adds inversion) vs extended
+        # (16-bit) from the address width — matching Flipper NEC vs NECext.
+        return NECCommand(address=addr & 0xFFFF, command=cmd & 0xFF)
+    if proto in SONY_ADDRESS_BITS:
+        from infrared_protocols.commands.sony import SonyCommand
+
+        return SonyCommand(address=addr, address_bits=SONY_ADDRESS_BITS[proto], command=cmd)
+    if proto == "Samsung32":
+        from infrared_protocols.commands.samsung import Samsung32Command
+
+        return Samsung32Command(address=addr & 0xFFFF, command=cmd & 0xFF)
+    if proto in ("RC5", "RC5X"):
+        from infrared_protocols.commands.rc5 import RC5Command
+
+        return RC5Command(address=addr, command=cmd)
+    if proto == "Sharp":
+        from infrared_protocols.commands.sharp import SharpCommand
+
+        return SharpCommand(address=addr, command=cmd)
+    return None
 
 
-def _bitrev(value, width):
-    """Reverse the low `width` bits of `value`."""
-    result = 0
-    for _ in range(width):
-        result = (result << 1) | (value & 1)
-        value >>= 1
-    return result
+def emit_parsed(entry):
+    """Encode a parsed protocol to transmit_raw via the library.
 
-
-def emit_sony(entry):
-    nbits = SONY_NBITS[entry["protocol"]]
-    addr_bits = nbits - 7                       # SIRC: 5/8/13-bit address
-    command = _le(entry["command"]) & 0x7F      # 7-bit command
-    address = _le(entry["address"]) & ((1 << addr_bits) - 1)
-    # The wire is command (LSB-first) then address (LSB-first), and ESPHome
-    # transmits `data` MSB-first — so pack bit-reversed command + address.
-    # e.g. Sony TV Power (cmd 21, addr 1) -> 0xA90, matching ESPHome's docs.
-    data = (_bitrev(command, 7) << addr_bits) | _bitrev(address, addr_bits)
-    return ("transmit_sony", {"data": f"0x{data:X}", "nbits": nbits})
+    Returns ('transmit_raw', {...}) or None if unmapped. May raise ValueError
+    (bad fields) or ImportError (library absent); the caller falls back to a
+    `# TODO unsupported` comment.
+    """
+    command = _command_for(entry)
+    if command is None:
+        return None
+    return ("transmit_raw", {"carrier_frequency": command.modulation, "code": command.get_raw_timings()})
 
 
 def _button_name(prefix, name):
@@ -138,7 +170,7 @@ def generate(entries, ref, src, tx_id, prefix):
     out = [
         f"# Generated from {FLIPPER_REPO}@{ref}",
         f"#   path: {src}",
-        "# Prototype (flipper_ir_to_esphome.py) — raw + NEC/NECext + Sony SIRC.",
+        "# Parsed protocols encoded by infrared-protocols -> transmit_raw.",
         "# VERIFY parsed codes against a live remote_receiver capture.",
         "button:",
     ]
@@ -148,20 +180,19 @@ def generate(entries, ref, src, tx_id, prefix):
         typ = entry.get("type")
         proto = entry.get("protocol", "")
         try:
-            if typ == "raw":
-                action, args = emit_raw(entry)
-            elif typ == "parsed" and proto in ("NEC", "NECext", "NEC42", "NEC42ext"):
-                action, args = emit_nec(entry, ext=proto.endswith("ext"))
-            elif typ == "parsed" and proto in SONY_NBITS:
-                action, args = emit_sony(entry)
-            else:
-                skipped.append((name, proto or typ or "unknown"))
-                continue
-        except (KeyError, ValueError):
-            skipped.append((name, f"{proto or typ} (parse error)"))
+            # raw is a passthrough; every parsed protocol is encoded by the
+            # library. Both yield transmit_raw.
+            result = emit_raw(entry) if typ == "raw" else emit_parsed(entry)
+        except (KeyError, ValueError, ImportError):
+            skipped.append((name, f"{proto or typ} (encode error)"))
             continue
+        if result is None:
+            skipped.append((name, proto or typ or "unknown"))
+            continue
+        action, args = result
 
         bname = _button_name(prefix, name)
+        code = ", ".join(str(x) for x in args["code"])
         out.append("  - platform: template")
         out.append(f"    id: {_slug(bname)}")
         out.append(f'    name: "{bname}"')
@@ -169,16 +200,14 @@ def generate(entries, ref, src, tx_id, prefix):
         out.append(f"      - remote_transmitter.{action}:")
         if tx_id:
             out.append(f"          transmitter_id: {tx_id}")
-        if action == "transmit_raw":
-            code = ", ".join(str(x) for x in args["code"])
-            out.append(f"          carrier_frequency: {args['carrier_frequency']}")
-            out.append(f"          code: [{code}]")
-        elif action == "transmit_sony":
-            out.append(f"          data: {args['data']}")
-            out.append(f"          nbits: {args['nbits']}")
-        else:  # transmit_nec
-            out.append(f"          address: {args['address']}")
-            out.append(f"          command: {args['command']}")
+        out.append(f"          carrier_frequency: {args['carrier_frequency']}")
+        out.append(f"          code: [{code}]")
+        # Library frames are single — repeat them at the transmit layer. A raw
+        # capture is authoritative (may already include repeats), so send as-is.
+        if typ != "raw":
+            out.append("          repeat:")
+            out.append(f"            times: {PARSED_REPEAT_TIMES}")
+            out.append(f"            wait_time: {PARSED_REPEAT_WAIT}")
 
     for name, why in skipped:
         out.append(f"# TODO unsupported: {name} ({why})")

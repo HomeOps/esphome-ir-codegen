@@ -1,10 +1,15 @@
-"""Unit tests for the Flipper .ir -> ESPHome transformer."""
+"""Unit tests for the Flipper .ir -> ESPHome transformer.
+
+Parsed protocols are encoded by the infrared-protocols library and emitted as
+transmit_raw, so these assert the raw timings the library returns (its protocol
+correctness is covered by its own test suite). Requires the library installed
+(Python >= 3.14).
+"""
 
 from flipper_ir_to_esphome import (
     _mirror_out,
-    emit_nec,
+    emit_parsed,
     emit_raw,
-    emit_sony,
     generate,
     parse_ir,
 )
@@ -21,29 +26,44 @@ def test_parse_splits_on_hash():
     assert [e["name"] for e in entries] == ["A", "B"]
 
 
-def test_nec_adds_inverted_high_byte():
-    action, args = emit_nec({"address": "04 00 00 00", "command": "08 00 00 00"})
-    assert action == "transmit_nec"
-    assert args["address"] == "0xFB04"
-    assert args["command"] == "0xF708"
-
-
-def test_sony_sirc_packs_command_then_address():
-    action, args = emit_sony(
-        {"protocol": "SIRC", "address": "01 00 00 00", "command": "15 00 00 00"}
-    )
-    assert action == "transmit_sony"
-    assert args["nbits"] == 12
-    # ESPHome transmits MSB-first: Sony TV "Power" (cmd 21, addr 1) = 0xA90
-    # (the canonical value in ESPHome's docs).
-    assert args["data"] == "0xA90"
-
-
 def test_raw_alternates_sign():
     action, args = emit_raw({"frequency": "38000", "data": "100 200 300 400"})
     assert action == "transmit_raw"
     assert args["carrier_frequency"] == 38000
     assert args["code"] == [100, -200, 300, -400]
+
+
+def test_parsed_nec_encoded_as_raw_timings():
+    # NEC leader is 9000µs mark + 4500µs space (infrared_protocols.commands.nec).
+    action, args = emit_parsed(
+        {"protocol": "NEC", "address": "04 00 00 00", "command": "08 00 00 00"}
+    )
+    assert action == "transmit_raw"
+    assert args["carrier_frequency"] == 38000
+    assert args["code"][:2] == [9000, -4500]
+
+
+def test_parsed_sony_encoded_as_raw_timings():
+    # Sony SIRC leader is 4T = 2400µs mark, 40kHz carrier.
+    action, args = emit_parsed(
+        {"protocol": "SIRC", "address": "01 00 00 00", "command": "15 00 00 00"}
+    )
+    assert action == "transmit_raw"
+    assert args["carrier_frequency"] == 40000
+    assert args["code"][0] == 2400
+
+
+def test_parsed_samsung_encoded_as_raw_timings():
+    action, args = emit_parsed(
+        {"protocol": "Samsung32", "address": "07 00 00 00", "command": "02 00 00 00"}
+    )
+    assert action == "transmit_raw"
+    assert isinstance(args["code"], list) and len(args["code"]) > 2
+
+
+def test_parsed_unmapped_protocol_returns_none():
+    # RC6 isn't one the library encoders cover here -> falls through to skipped.
+    assert emit_parsed({"protocol": "RC6", "address": "00", "command": "00"}) is None
 
 
 def test_mirror_out_preserves_dirs_and_case():
@@ -61,4 +81,23 @@ def test_generate_emits_stable_button_id():
     out = generate(entries, "ref", "src", None, "")
     assert "id: ir_power" in out
     assert 'name: "Power"' in out
-    assert "transmit_sony" in out
+    assert "transmit_raw" in out
+    assert "# TODO unsupported" not in out
+
+
+def test_generate_repeats_parsed_but_not_raw():
+    # Library frames are single -> the transmit layer must repeat them (Sony
+    # SIRC needs ~3 frames). A raw capture is authoritative and sent as-is.
+    parsed = generate(
+        [{"name": "Power", "type": "parsed", "protocol": "SIRC",
+          "address": "01 00 00 00", "command": "15 00 00 00"}],
+        "ref", "src", None, "",
+    )
+    assert "repeat:" in parsed
+    assert "times: 3" in parsed
+
+    raw = generate(
+        [{"name": "Power", "type": "raw", "frequency": "40000", "data": "100 200"}],
+        "ref", "src", None, "",
+    )
+    assert "repeat:" not in raw

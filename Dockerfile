@@ -5,7 +5,8 @@
 #              HTTP. A device clones http://<host>:9418/default.git once and
 #              picks files: [<Flipper/path>.ir]. Only knob: --repo (a fork).
 #   CLI:    docker run IMAGE --path <Cat>/<Brand>/<Model>.ir  (print one component)
-FROM python:3.12-slim
+# Python 3.14 is required by the infrared-protocols dependency.
+FROM python:3.14-slim
 
 # git is required for --serve (components are served as git repos).
 RUN apt-get update \
@@ -13,9 +14,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Install deps first for layer caching (infrared-protocols: protocol encoders).
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY flipper_ir_to_esphome.py /app/
 
 EXPOSE 9418
 
-# stdlib-only — no pip dependencies.
 ENTRYPOINT ["python", "/app/flipper_ir_to_esphome.py"]
