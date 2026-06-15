@@ -392,42 +392,50 @@ def _populate_flipper(work, repo, branch):
 def _ha_ir_codesets():
     """Yield (relpath, [(name, Command), ...]) for every infrared-protocols code
     set — e.g. 'vizio/tv' -> [('POWER', NECCommand(...)), ...]. Each `codes`
-    submodule exposes Enums with a `.to_command()`; we enumerate their members."""
+    submodule exposes Enums with a `.to_command()`; we enumerate their members.
+
+    The library's brand dirs (codes/vizio/…) have no __init__.py (namespace
+    packages), which pkgutil.walk_packages won't descend into — so we walk the
+    package directory on disk and import each module by name instead.
+    """
     import enum
     import importlib
-    import pkgutil
 
     import infrared_protocols.codes as codes_pkg
     from infrared_protocols.commands import Command
 
-    prefix = codes_pkg.__name__ + "."
-    for modinfo in pkgutil.walk_packages(codes_pkg.__path__, prefix=prefix):
-        if modinfo.ispkg:
-            continue
-        try:
-            mod = importlib.import_module(modinfo.name)
-        except Exception:
-            continue
-        rel = modinfo.name[len(prefix):].replace(".", "/")
-        named, seen = [], set()
-        for attr in vars(mod).values():
-            if not (isinstance(attr, type) and issubclass(attr, enum.Enum)):
-                continue
-            if attr.__module__ != modinfo.name or not hasattr(attr, "to_command"):
-                continue
-            for member in attr:
-                if member.name in seen:
+    base = codes_pkg.__name__
+    for root in list(codes_pkg.__path__):
+        for dirpath, _dirs, files in os.walk(root):
+            for filename in sorted(files):
+                if not filename.endswith(".py") or filename == "__init__.py":
                     continue
+                relmod = os.path.relpath(os.path.join(dirpath, filename), root)[:-3]
+                relmod = relmod.replace(os.sep, ".")
+                modname = f"{base}.{relmod}"
                 try:
-                    command = member.to_command()
+                    mod = importlib.import_module(modname)
                 except Exception:
                     continue
-                if not isinstance(command, Command):
-                    continue
-                seen.add(member.name)
-                named.append((member.name, command))
-        if named:
-            yield rel, named
+                named, seen = [], set()
+                for attr in vars(mod).values():
+                    if not (isinstance(attr, type) and issubclass(attr, enum.Enum)):
+                        continue
+                    if attr.__module__ != modname or not hasattr(attr, "to_command"):
+                        continue
+                    for member in attr:
+                        if member.name in seen:
+                            continue
+                        try:
+                            command = member.to_command()
+                        except Exception:
+                            continue
+                        if not isinstance(command, Command):
+                            continue
+                        seen.add(member.name)
+                        named.append((member.name, command))
+                if named:
+                    yield relmod.replace(".", "/"), named
 
 
 def _populate_ha_ir(work):
