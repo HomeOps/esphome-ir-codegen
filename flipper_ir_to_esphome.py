@@ -284,27 +284,73 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
     """
     import http.server
     import re as _re
+    import subprocess
     import tempfile
     import threading
+    from urllib.parse import urlsplit
 
     branch = ref or _default_branch(repo)
     cache = tempfile.mkdtemp(prefix="irdb-http-")
     lock = threading.Lock()
 
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, directory=cache, **kwargs)
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
 
         def do_GET(self):
-            match = _re.match(r"^/(.+?\.git)/", self.path)
-            if match:
-                try:
-                    with lock:
-                        _ensure_repo(cache, repo, branch, match.group(1)[:-4])
-                except Exception as err:
-                    self.send_error(404, f"cannot generate: {err}")
-                    return
-            super().do_GET()
+            self._serve()
+
+        def do_POST(self):
+            self._serve()
+
+        def _serve(self):
+            split = urlsplit(self.path)
+            match = _re.match(r"^/(.+?\.git)(/.*)$", split.path)
+            if not match:
+                self.send_error(404)
+                return
+            try:
+                with lock:
+                    _ensure_repo(cache, repo, branch, match.group(1)[:-4])
+            except Exception as err:
+                self.send_error(404, f"cannot generate: {err}")
+                return
+
+            # Smart HTTP via git-http-backend (supports shallow clones).
+            env = {
+                **os.environ,
+                "GIT_PROJECT_ROOT": cache,
+                "GIT_HTTP_EXPORT_ALL": "1",
+                "PATH_INFO": split.path,
+                "QUERY_STRING": split.query,
+                "REQUEST_METHOD": self.command,
+                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                "GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
+                "REMOTE_ADDR": self.client_address[0],
+            }
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b""
+            proc = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True)
+
+            out = proc.stdout
+            sep = b"\r\n\r\n" if b"\r\n\r\n" in out else b"\n\n"
+            head, _, payload = out.partition(sep)
+            status = 200
+            headers = []
+            for line in head.splitlines():
+                if not line.strip():
+                    continue
+                key, _, val = line.partition(b":")
+                key, val = key.strip(), val.strip()
+                if key.lower() == b"status":
+                    status = int(val.split(b" ")[0])
+                else:
+                    headers.append((key.decode("latin-1"), val.decode("latin-1")))
+            self.send_response(status)
+            for key, val in headers:
+                self.send_header(key, val)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
 
         def log_message(self, *args):
             pass

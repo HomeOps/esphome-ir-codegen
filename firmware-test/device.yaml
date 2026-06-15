@@ -28,6 +28,7 @@ remote_transmitter:
 packages:
   sony_bravia:
     url: http://localhost:9418/TVs/Sony/Sony_Bravia.git
+    ref: main
     files: [Sony_Bravia.yaml]
     refresh: 0s
 
