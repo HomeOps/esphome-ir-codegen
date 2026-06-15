@@ -93,5 +93,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: firmware-sony-bravia
-          path: .esphome/build/**/*.bin
+          path: firmware-test/.esphome/build/**/*.bin
           if-no-files-found: warn
