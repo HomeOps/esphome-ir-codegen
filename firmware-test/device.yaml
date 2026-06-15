@@ -5,7 +5,7 @@
 # the service the CI started. The pulled component defines one button per remote
 # key. The served file path mirrors the Flipper path: files: [TVs/Sony/Sony_Bravia.yaml]
 # selects TVs/Sony/Sony_Bravia.ir from Flipper-IRDB. This is the ONLY place a
-# specific remote is named. The "Power" key becomes `id: power`.
+# specific remote is named. The "Power" key becomes `id: ir_power`.
 esphome:
   name: ir-codegen-test
 
@@ -41,4 +41,4 @@ binary_sensor:
       mode:
         input: true
     on_press:
-      - button.press: power
+      - button.press: ir_power

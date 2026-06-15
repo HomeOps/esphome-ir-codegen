@@ -38,7 +38,7 @@ binary_sensor:
   - platform: gpio
     pin: { number: GPIO39, inverted: true, mode: { input: true } }
     on_press:
-      - button.press: power          # Sony "Power" toggle, pulled from the DB
+      - button.press: ir_power       # Sony "Power" toggle, pulled from the DB
 ```
 
 The point: **there are no IR codes in your config** — just a reference to a device

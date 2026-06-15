@@ -45,6 +45,6 @@ def test_generate_emits_stable_button_id():
         "address": "01 00 00 00", "command": "15 00 00 00",
     }]
     out = generate(entries, "ref", "src", None, "")
-    assert "id: power" in out
+    assert "id: ir_power" in out
     assert 'name: "Power"' in out
     assert "transmit_sony" in out

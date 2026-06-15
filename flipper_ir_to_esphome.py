@@ -109,14 +109,17 @@ def _button_name(prefix, name):
 
 
 def _slug(text):
-    """Stable, valid ESPHome id from a name ('Bravia Power' -> bravia_power)."""
+    """Stable, valid, non-reserved ESPHome id ('Return' -> ir_return).
+
+    Always `ir_`-prefixed: it guarantees a leading letter and dodges ESPHome /
+    C++ reserved words (return, switch, class, default, …) that arbitrary remote
+    button names would otherwise collide with.
+    """
     s = "".join(c if c.isalnum() else "_" for c in text.lower())
     while "__" in s:
         s = s.replace("__", "_")
     s = s.strip("_")
-    if not s or not s[0].isalpha():
-        s = "ir_" + s
-    return s
+    return f"ir_{s}" if s else "ir_unnamed"
 
 
 def generate(entries, ref, src, tx_id, prefix):
