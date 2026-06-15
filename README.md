@@ -4,10 +4,10 @@ Turn a [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) `.ir` file into 
 ready-to-use ESPHome `remote_transmitter` component **on demand**, by referencing
 it from your ESPHome YAML as if it were a remote package source.
 
-> **Status:** working transformer + Dockerized **git service**. An end-to-end CI
-> test stands up the container and has **ESPHome clone the component from it** to
-> build real firmware (see [CI](#ci-the-sony-bravia-end-to-end-test)). Next:
-> HTTP/ingress serving + HA add-on packaging — see [Roadmap](#roadmap).
+> **Status:** working, CI-green, installable as a Home Assistant add-on. The
+> add-on serves the whole Flipper-IRDB as one `default.git` repo; an end-to-end CI
+> test builds real firmware that clones it. Verified on real hardware — an M5 Atom
+> Lite toggling a Sony Bravia.
 
 ## Showcase: a ~$20 universal remote
 
@@ -42,10 +42,10 @@ binary_sensor:
 ```
 
 The point: **there are no IR codes in your config** — just a reference to a device
-in a community database. The `files:` path *is* the selector:
-`TVs/Sony/Sony_Bravia.yaml` is generated on the fly from `TVs/Sony/Sony_Bravia.ir`.
-Swap it for any of the thousands of remotes in Flipper-IRDB and reflash — that one
-line is the only place a specific remote is named.
+in a community database. The `files:` path is the selector:
+`TVs/Sony/Sony_Bravia.yaml` is the generated component for the Flipper file
+`TVs/Sony/Sony_Bravia.ir`. Swap it for any of the ~9,000 remotes in Flipper-IRDB
+and reflash — that one line is the only place a specific remote is named.
 
 ### Why this matters
 
@@ -127,7 +127,7 @@ docker run -d -p 9418:9418 esphome-ir-codegen --serve   # path-less; add --repo 
 ```
 
 ```yaml
-# in your ESPHome device config — clones a per-remote URL, generated on demand:
+# in your ESPHome device config — clones the shared default.git:
 packages:
   tv:
     url: http://localhost:9418/default.git
@@ -136,49 +136,41 @@ packages:
     refresh: 0s
 ```
 
-**How the `.ir` is resolved:** the **URL path** is the Flipper-IRDB path with
-`.git` — `…/TVs/Sony/Sony_Bravia.git` is generated on demand from
-`TVs/Sony/Sony_Bravia.ir`, and the repo holds `Sony_Bravia.yaml`. The add-on is
-generic (its only knob is the source `repo`); the device URL decides the *remote*.
+**How it's resolved:** the add-on builds the whole DB into `default.git` — one repo,
+cloned once and shared by all devices. The `files:` entry (`TVs/Sony/Sony_Bravia.yaml`)
+selects the generated component for that Flipper path. The add-on's only knob is
+the source `repo`.
 
 ## Design (locked decisions)
 
-1. **Reproducibility = a valid Flipper ref.** The "source" is a pinned
-   Flipper-IRDB git ref + path; the add-on fetches
-   `raw.githubusercontent.com/Lucaslhm/Flipper-IRDB/<ref>/<path>`. Pinning is
-   inherent and points at the upstream DB, not a fork/copy.
-2. **Live-service dependency is acceptable.** The add-on may hit the network at
-   compile time; if it's down, the build fails. No offline mirror in v1.
-3. **Naming / dedup / button-explosion handling is deferred.** Minimal naming for
-   now (optional `prefix`); curation comes later.
+1. **One add-on parameter: the source `repo`.** No path/ref/out. The device's
+   `packages:` URL + `files:` entry select the remote.
+2. **Whole DB as one `default.git`.** Built at startup; a device clones it **once**
+   and all devices share that clone (vs. a clone per remote).
+3. **`ref: main` stays in the device YAML** (the served repo's branch); the add-on
+   uses the source repo's default branch.
 
 ## Architecture
 
 ```
-ESPHome build  ──packages: url──▶  HA add-on  ──fetch @ref──▶  Flipper-IRDB (GitHub)
-   (compile)                       (transform)                  (pinned source)
-        ◀───────── generated ESPHome YAML (buttons) ──────────
+ESPHome build ──git clone──▶  HA add-on (default.git)  ◀──built at startup── Flipper-IRDB
+   (compile)    one shared      whole DB, each .ir path                       (GitHub)
+                  clone         holds its component (.yaml)
 ```
 
-**Transformer core** (done): parse `.ir` → emit ESPHome `button` entities, one
-per signal, each calling `remote_transmitter.transmit_*`.
+- **Transformer core:** parse `.ir` → emit ESPHome `button` entities, each calling
+  `remote_transmitter.transmit_*`.
+- **Serving layer:** `--serve` builds the whole DB into `default.git` and serves it
+  over **smart HTTP** (`git http-backend`, so ESPHome's shallow clone works). The
+  `git daemon` access-hook approach was tried and rejected (the daemon refuses
+  repos that don't exist before the hook runs).
 
-**Serving layer** (planned), how ESPHome pulls it — ESPHome remote
-`packages:` / `external_components:` are git-based, so the add-on presents itself
-as a repo:
-
-| Stage | Mechanism | Status |
-|-------|-----------|--------|
-| **Now** | `--serve` builds the whole DB into `default.git` and serves it over smart HTTP; ESPHome clones it once, selecting `files: [<path>.ir]`. Add-on takes only `repo`. Exercised end-to-end in CI. | ✅ |
-| Next | HTTP(S) / smart-HTTP serving so it works through reverse proxies and HA ingress. | ⏳ |
-| Later | On-demand generation per clone (vs. baked once at container start). | ⏳ |
-
-ESPHome usage today:
+ESPHome usage:
 
 ```yaml
 packages:
   tv_codes:
-    url: http://<addon-host>:9418/default.git    # one repo, cloned once
+    url: http://<addon-host>:9418/default.git    # one repo, cloned once, shared
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]             # the Flipper path = the remote
     refresh: 0s
@@ -190,11 +182,12 @@ packages:
 |----------------|----------------|--------|
 | `type: raw` | `transmit_raw` (sign-alternated, carrier from `frequency`) | ✅ always correct |
 | `type: parsed` NEC / NECext / NEC42(ext) | `transmit_nec` (16-bit words; NEC uses `addr \| (~addr<<8)`) | ✅ |
-| `type: parsed` SIRC / SIRC15 / SIRC20 (Sony) | `transmit_sony` (`command \| address<<7`, nbits 12/15/20) | ✅ |
+| `type: parsed` SIRC / SIRC15 / SIRC20 (Sony) | `transmit_sony` (bit-reversed, **MSB-first**; Power = `0xA90`) | ✅ verified on a real Bravia |
 | other parsed (Samsung32, RC5/6, Panasonic, …) | `# TODO unsupported` comment | ⏳ next |
 
-**Verify parsed codes** against a live `remote_receiver` capture — the receiver
-dump prints the same 16-bit NEC words this emits, so they should match.
+**Bit order matters:** ESPHome transmits Sony MSB-first (NEC LSB-first), so the
+encoders are not symmetric. Sony was wrong (`0x95`) until corrected to `0xA90`.
+Verify new protocols against a live `remote_receiver` capture before trusting them.
 
 ### CLI usage
 
@@ -215,9 +208,10 @@ repository — see [`addon/`](addon/) and [`repository.yaml`](repository.yaml)):
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add
    `https://github.com/HomeOps/esphome-ir-codegen`.
-2. Install **ESPHome IR Codegen**, then in **Configuration** set `ref` (a pinned
-   Flipper-IRDB commit) and `path` (e.g. `TVs/Sony/Sony_Bravia.ir`). Start it.
-3. Point ESPHome at it — codes are pulled at compile time, nothing stored:
+2. Install **ESPHome IR Codegen** and **Start** it. The only option is `repo`
+   (default `Lucaslhm/Flipper-IRDB`; point it at a fork if you like). First start
+   builds the whole DB (a few minutes); after that it's cached.
+3. Point ESPHome at the shared `default.git` and pick a remote by path:
 
    ```yaml
    packages:
@@ -233,22 +227,18 @@ options-reading entrypoint (no script duplication). Full usage: [`addon/DOCS.md`
 
 ## CI: the Sony Bravia end-to-end test
 
-Every push and PR runs the real thing (`.github/workflows/ci.yaml`), exercising
-the add-on **as a live service** — not a pre-generated file:
+Every push and PR runs the real thing (`.github/workflows/ci.yaml`):
 
 1. **Build** the codegen Docker image.
-2. **Start** it as a running container serving `http://localhost:9418/default.git` (the whole DB)
-   (the Sony Bravia component, from a pinned Flipper-IRDB ref).
-3. **Compile** real ESP32 firmware (`firmware-test/device.yaml`) whose
-   `packages:` block **clones the component from that running container**. There
-   are no generated files on disk — ESPHome pulls from the service.
-4. **Upload** the resulting `firmware.bin` as a build artifact.
+2. **Start** it as the add-on (`--serve`, repo only) — it builds the whole DB into
+   `default.git` (CI pins the Flipper commit with `--ref` for determinism).
+3. **Compile** real ESP32 firmware (`firmware-test/device.yaml`) whose `packages:`
+   block **clones `default.git`** and includes `TVs/Sony/Sony_Bravia.yaml`.
+4. **Upload** the generated Sony Bravia component as the build artifact.
 
-If the served YAML were malformed, step 3 fails — so a green build means the live
-service produces **valid firmware**. (Validity ≠ correctness: that the codes are
-the *right* ones for your TV is verified separately against a live
-`remote_receiver` capture.) This Sony Bravia run is the regression test guarding
-every future PR.
+A green build means the served codes produce **valid firmware**. Validity ≠
+correctness: that the codes are the *right* ones is a separate check (Sony was
+caught wrong on real hardware — see the bit-order note above).
 
 Releases use [release-please](https://github.com/googleapis/release-please)
 (changelog in [`CHANGES.md`](CHANGES.md)); a tagged release publishes the image
@@ -256,11 +246,9 @@ to GHCR (`.github/workflows/publish.yaml`).
 
 ## Roadmap
 
-- [x] Parsed-protocol coverage: Sony (SIRC/SIRC15/SIRC20). NEC/NECext + raw.
-- [x] `Dockerfile` + end-to-end CI (Sony Bravia → firmware).
-- [ ] More parsed protocols: Samsung32, RC5/RC6, Panasonic, Pioneer — each
-      verified against a receiver capture.
-- [ ] REST serving layer (MVP) + HA add-on `config.yaml`.
-- [ ] Local bare-git-repo cache mode (the `packages: url:` "repo" experience).
-- [ ] Optional smart-HTTP git backend.
-- [ ] Button-set selection / naming / dedup.
+- [x] Sony (SIRC/SIRC15/SIRC20, MSB-first), NEC/NECext, raw.
+- [x] Whole-DB `default.git` over smart HTTP; HA add-on; end-to-end CI.
+- [x] Verified on real hardware (M5 Atom Lite → Sony Bravia).
+- [ ] More protocols: Samsung32, RC5/RC6, Panasonic, Pioneer.
+- [ ] On-demand generation (vs. whole-DB at startup) to cut first-boot time.
+- [ ] Verify NEC bit order against a receiver capture (Sony was MSB-first).
