@@ -1,0 +1,41 @@
+# CI compile target for the ha-ir adapter — an M5 Atom Lite whose button toggles
+# a Vizio TV using Home Assistant's own infrared-protocols code set.
+#
+# The ha-ir adapter (ha-ir.git) exposes infrared-protocols' curated code sets at
+# <brand>/<type>.yaml. ESPHome clones it and `files:` selects the code set; the
+# generated component defines id: ir_power, etc. — same shape as the flipper one.
+esphome:
+  name: ir-codegen-ha-ir
+
+esp32:
+  board: m5stack-atom        # M5 Atom Lite (ESP32-PICO)
+  framework:
+    type: arduino
+
+logger:
+
+remote_transmitter:
+  id: ir_tx
+  pin:
+    number: GPIO12
+    ignore_strapping_warning: true
+  carrier_duty_percent: 50%
+  non_blocking: true
+
+packages:
+  vizio_tv:
+    url: http://localhost:9418/ha-ir.git
+    ref: main
+    files: [vizio/tv.yaml]
+    refresh: 1d
+
+binary_sensor:
+  - platform: gpio
+    name: "Atom Button"
+    pin:
+      number: GPIO39
+      inverted: true
+      mode:
+        input: true
+    on_press:
+      - button.press: ir_power

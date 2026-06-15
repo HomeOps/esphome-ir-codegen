@@ -1,17 +1,22 @@
 # ESPHome IR Codegen — Home Assistant add-on
 
-Serves the entire [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) (or a
-fork) to ESPHome as **one git repo, `default.git`**, where each `.ir` path holds
-its generated ESPHome component. Your device clones it **once** (and all devices
-share that clone) and selects a remote by path. No IR codes in your config.
+Serves IR code sets to ESPHome as git repos. Each **adapter** is a source of
+codes, served as its own repo; your device clones one and selects a remote by
+path. No IR codes in your config.
+
+| Adapter | Repo | Source | `files:` path |
+|---------|------|--------|---------------|
+| **flipper** | `flipper.git` | [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) (or a fork) | mirrors the tree — `TVs/Sony/Sony_Bravia.yaml` |
+| **ha-ir** | `ha-ir.git` | [infrared-protocols](https://github.com/home-assistant-libs/infrared-protocols) curated code sets | `<brand>/<type>.yaml` — `vizio/tv.yaml` |
 
 ## Install
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add:
    `https://github.com/HomeOps/esphome-ir-codegen`
 2. Install **ESPHome IR Codegen** and **Start** it. The **first start** generates
-   the whole database (~9k components — a few minutes); after that it's instant.
-   Optionally set `repo` to a fork.
+   the whole flipper database (~9k components — a few minutes) plus the ha-ir
+   code sets; after that it's instant. Optionally set `repo` to a fork, or
+   `adapters` (default `flipper,ha-ir`) to serve only one.
 
 ## Use from ESPHome
 
@@ -24,16 +29,16 @@ remote_transmitter:
 
 packages:
   tv:
-    url: http://<addon-host>:9418/default.git
+    url: http://<addon-host>:9418/flipper.git   # or ha-ir.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.yaml]      # the exact Flipper-IRDB path
+    files: [TVs/Sony/Sony_Bravia.yaml]      # flipper path (ha-ir: vizio/tv.yaml)
     refresh: 1d                             # clone once, then reuse (see gotchas)
 ```
 
 `<addon-host>` is the add-on hostname (e.g. `948146ed-esphome-ir-codegen` — the
 hash-prefixed slug in the add-on page URL) or your HA host's IP. Reference the
 generated buttons, e.g. `button.press: ir_power`. Swap the `files:` path for any
-remote in the database.
+remote in the adapter (or point `url:` at the other adapter).
 
 ### Complete, runnable device (copy-paste)
 
@@ -73,7 +78,7 @@ remote_transmitter:
 
 packages:
   tv:
-    url: http://<addon-host>:9418/default.git
+    url: http://<addon-host>:9418/flipper.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]
     refresh: 1d
@@ -93,7 +98,8 @@ binary_sensor:
 
 | Option | Default | Notes |
 |--------|---------|-------|
-| `repo` | `Lucaslhm/Flipper-IRDB` | Source database repo. Point it at a fork freely. |
+| `repo` | `Lucaslhm/Flipper-IRDB` | Flipper adapter source repo. Point it at a fork freely. |
+| `adapters` | `flipper,ha-ir` | Comma-separated adapters to serve. Drop `ha-ir` for flipper-only, or `flipper` to skip the ~9k build. |
 
 ## Gotchas (learned on real hardware)
 
@@ -105,9 +111,10 @@ binary_sensor:
 - **After restarting this add-on, restart the ESPHome add-on too** (or use the
   host IP instead of the hostname). The add-on's container IP changes on restart;
   ESPHome caches the old DNS answer and fails with "couldn't connect". The host
-  IP (`http://192.168.x.x:9418/default.git`) sidesteps stale DNS.
-- **First start takes a few minutes** — it generates ~9k components into one
-  `default.git` (~10 MB). Subsequent clones are instant and shared across devices.
+  IP (`http://192.168.x.x:9418/flipper.git`) sidesteps stale DNS.
+- **First start takes a few minutes** — it generates ~9k flipper components
+  (~10 MB) plus the ha-ir code sets. Subsequent clones are instant and shared
+  across devices.
 - **"Valid firmware" ≠ "correct codes."** A green compile only proves the YAML is
   valid. If a device doesn't respond, verify the codes with a `remote_receiver`
   capture. Note Sony devices in particular often need the frame repeated (the

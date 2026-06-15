@@ -7,10 +7,12 @@ correctness is covered by its own test suite). Requires the library installed
 """
 
 from flipper_ir_to_esphome import (
+    _ha_ir_codesets,
     _mirror_out,
     emit_parsed,
     emit_raw,
     generate,
+    generate_from_commands,
     parse_ir,
 )
 
@@ -83,6 +85,36 @@ def test_generate_emits_stable_button_id():
     assert 'name: "Power"' in out
     assert "transmit_raw" in out
     assert "# TODO unsupported" not in out
+
+
+def test_generate_from_commands_renders_raw_with_repeat():
+    # ha-ir adapter: a library Command -> transmit_raw + transmit-layer repeat.
+    from infrared_protocols.commands.nec import NECCommand
+
+    out = generate_from_commands([("POWER", NECCommand(address=0x04, command=0x08))], "vizio/tv")
+    assert "id: ir_power" in out
+    assert "transmit_raw" in out
+    assert "repeat:" in out and "times: 3" in out
+    assert "code: [9000, -4500" in out      # NEC leader from the library
+
+
+def test_generate_from_commands_dedupes_ids():
+    from infrared_protocols.commands.nec import NECCommand
+
+    out = generate_from_commands(
+        [("POWER", NECCommand(address=0x04, command=0x08)),
+         ("Power", NECCommand(address=0x04, command=0x09))],   # same slug -> ir_power
+        "vizio/tv",
+    )
+    assert out.count("id: ir_power") == 1
+
+
+def test_ha_ir_codesets_includes_vizio_tv_power():
+    # The ha-ir adapter discovers infrared-protocols' own curated code sets.
+    sets = dict(_ha_ir_codesets())
+    assert "vizio/tv" in sets
+    names = {name for name, _cmd in sets["vizio/tv"]}
+    assert "POWER" in names
 
 
 def test_generate_repeats_parsed_but_not_raw():
