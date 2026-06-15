@@ -70,6 +70,12 @@ practical:
   turns a Flipper `.ir` file into ESPHome YAML. This is the direct inspiration;
   the transformer here is the same idea wrapped as an on-demand, ref-pinned
   service. **Thank you, balloob.**
+- **[home-assistant-libs/infrared-protocols](https://github.com/home-assistant-libs/infrared-protocols)**
+  — Home Assistant's IR protocol encoder/decoder library. **This project depends
+  on it**: every parsed protocol (NEC, Sony, Samsung32, RC5, Sharp…) is encoded
+  by this library, not by code of our own. It's the same encoder stack HA's
+  native infrared platform uses, so the codes we emit are protocol-correct by
+  construction.
 - **[READYWARE Signal Editor](https://readyware.net/signal-editor.html)** — a
   browser-based multi-format IR/RF converter (Flipper ↔ ESPHome/Pronto/LIRC…).
 - **[Lucaslhm/Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB)** — the
@@ -102,10 +108,10 @@ Step by step:
    never change under you.
 2. **The add-on has already translated the whole database** into one `default.git`
    repo; ESPHome clones it and `files:` selects your remote's component.
-3. **Each remote button becomes** the matching ESPHome transmit action:
-   - a Sony `Power` (SIRC) key → `remote_transmitter.transmit_sony: {data, nbits}`
-   - an NEC key → `transmit_nec: {address, command}`
-   - a `raw` capture → `transmit_raw: {carrier_frequency, code}`
+3. **Each remote button becomes** a `remote_transmitter.transmit_raw` action.
+   Parsed protocols (Sony, NEC, Samsung32, RC5, Sharp…) are encoded by the
+   [infrared-protocols](https://github.com/home-assistant-libs/infrared-protocols)
+   library into raw timings; a Flipper `raw` capture passes through directly.
 4. **Out comes a block of ESPHome YAML** — one `button` per remote key, each
    wired to your IR transmitter.
 5. **Include that YAML in your device config and flash.** Home Assistant now has
@@ -196,19 +202,31 @@ packages:
     refresh: 1d
 ```
 
-## Transformer — current coverage (baby step)
+## Transformer — current coverage
+
+Every parsed signal is encoded by the
+[infrared-protocols](https://github.com/home-assistant-libs/infrared-protocols)
+library and emitted as `transmit_raw` (the library returns raw timings). We keep
+no protocol math of our own.
 
 | Flipper signal | ESPHome output | Status |
 |----------------|----------------|--------|
-| `type: raw` | `transmit_raw` (sign-alternated, carrier from `frequency`) | ✅ always correct |
-| `type: parsed` NEC / NECext / NEC42(ext) | `transmit_nec` (16-bit words; NEC uses `addr \| (~addr<<8)`) | ✅ |
-| `type: parsed` SIRC / SIRC15 / SIRC20 (Sony) | `transmit_sony` (bit-reversed, **MSB-first**; Power = `0xA90`) | ✅ verified on a real Bravia |
-| other parsed (Samsung32, RC5/6, Panasonic, …) | `# TODO unsupported` comment | ⏳ next |
+| `type: raw` | `transmit_raw` (sign-alternated, carrier from `frequency`) | ✅ direct passthrough |
+| `type: parsed` NEC / NECext | `transmit_raw` via `NECCommand` | ✅ |
+| `type: parsed` SIRC / SIRC15 / SIRC20 (Sony) | `transmit_raw` via `SonyCommand` | ✅ |
+| `type: parsed` Samsung32 / RC5 / RC5X / Sharp | `transmit_raw` via the matching `*Command` | ✅ |
+| other parsed (NEC42, RC6, Kaseikyo, …) | `# TODO unsupported` comment | ⏳ next |
 
-**Bit order matters:** ESPHome transmits Sony **MSB-first** but NEC **LSB-first**,
-so the encoders aren't symmetric. Sony was wrong (`0x95`) until corrected to
-`0xA90`. **Verify new protocols against a live `remote_receiver` capture** before
-trusting them — compiling proves the YAML is valid, not that the code is right.
+**Single frame + transmit-layer repeat.** The library returns *one* frame per
+command — by design, repetition is the transmit layer's job (the same split HA's
+IR proxy uses). So parsed signals are emitted with a `repeat:` (Sony SIRC and
+others need ~3 frames before a device acts); a `raw` capture is authoritative and
+sent as-is. **Validity ≠ correctness:** a green compile proves the YAML is valid,
+not that the code is right for your device — verify against a live
+`remote_receiver` capture, or on the real hardware.
+
+> **Requires Python ≥ 3.14** (the `infrared-protocols` dependency). The Docker
+> image and CI use it; the esphome compile step is unaffected.
 
 ### CLI usage
 
