@@ -1,11 +1,9 @@
 # CI compile target — an M5 Atom Lite whose front button toggles a Sony Bravia.
 #
-# The Sony Bravia buttons are pulled from a RUNNING codegen Docker container over
-# git:// (no local artifacts) — ESPHome clones the component at compile time from
-# the service the CI started. The pulled component defines one button per remote
-# key. The served file path mirrors the Flipper path: files: [TVs/Sony/Sony_Bravia.yaml]
-# selects TVs/Sony/Sony_Bravia.ir from Flipper-IRDB. This is the ONLY place a
-# specific remote is named. The "Power" key becomes `id: ir_power`.
+# The component is pulled on demand from the path-less codegen service: the URL
+# path IS the Flipper-IRDB path (with .git), and the component is generated from
+# the matching .ir at request time. The device URL is the ONLY place a remote is
+# named — the add-on itself takes no path/ref/out.
 esphome:
   name: ir-codegen-test
 
@@ -19,24 +17,29 @@ logger:
 # The Atom Lite's built-in IR LED.
 remote_transmitter:
   id: ir_tx
-  pin: GPIO12
+  pin:
+    number: GPIO12             # IR LED on a strapping pin — safe for output
+    ignore_strapping_warning: true
   carrier_duty_percent: 50%
+  non_blocking: true           # explicit (default changed in ESPHome 2025.11.0)
 
-# Pull the Sony Bravia component straight from the live codegen Docker service.
+# `files:` selects the remote by its Flipper-IRDB path with a .yaml extension
+# (ESPHome only accepts .yaml/.yml). That file holds the generated component
+# (it defines id: ir_power, etc.). One repo, cloned once and shared across devices.
 packages:
   sony_bravia:
-    url: git://localhost:9418/irdb.git           # the running codegen container
+    url: http://localhost:9418/default.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.yaml]           # mirrors TVs/Sony/Sony_Bravia.ir
+    files: [TVs/Sony/Sony_Bravia.yaml]
     refresh: 0s
 
 # The Atom's front "clicker" button (G39) sends the Sony power toggle by pressing
-# the generated `bravia_power` button (which transmits via the IR LED above).
+# the generated `ir_power` button (which transmits via the IR LED above).
 binary_sensor:
   - platform: gpio
     name: "Atom Button"
     pin:
-      number: GPIO39        # input-only; board has an external pull-up
+      number: GPIO39           # input-only; board has an external pull-up
       inverted: true
       mode:
         input: true

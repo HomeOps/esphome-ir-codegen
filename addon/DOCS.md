@@ -1,20 +1,17 @@
 # ESPHome IR Codegen — Home Assistant add-on
 
-Serves IR codes from [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) to
-ESPHome as a `git://` package source. Your ESPHome device pulls a generated
-component at compile time — no IR codes in your config.
+Serves the entire [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) (or a
+fork) to ESPHome as **one git repo, `default.git`**, where each `.ir` path holds
+its generated ESPHome component. Your device clones it **once** (and all devices
+share that clone) and selects a remote by path. No IR codes in your config.
 
 ## Install
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add:
    `https://github.com/HomeOps/esphome-ir-codegen`
-2. Install **ESPHome IR Codegen**.
-3. In **Configuration**, set:
-   - `ref` — a pinned Flipper-IRDB commit (reproducibility).
-   - `path` — the `.ir` file, e.g. `TVs/Sony/Sony_Bravia.ir`.
-   - `out` — optional output name; defaults to the path with `.yaml`
-     (`TVs/Sony/Sony_Bravia.yaml`).
-4. Start the add-on. It serves `git://<your-ha-host>:9418/irdb.git`.
+2. Install **ESPHome IR Codegen** and **Start** it. The **first start** generates
+   the whole database (~9k components — a few minutes); after that it's instant.
+   Optionally set `repo` to a fork.
 
 ## Use from ESPHome
 
@@ -25,17 +22,26 @@ remote_transmitter:
 
 packages:
   tv:
-    url: git://<your-ha-host>:9418/irdb.git
+    url: http://<addon-host>:9418/default.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.yaml]   # mirrors the .ir path you configured
+    files: [TVs/Sony/Sony_Bravia.yaml]      # the exact Flipper-IRDB path
     refresh: 0s
 ```
 
-Then reference the generated buttons, e.g. `button.press: ir_power`.
+`<addon-host>` is the add-on hostname (e.g. `948146ed-esphome-ir-codegen` — the
+hash-prefixed slug in the add-on page URL) or your HA host's IP. Reference the
+generated buttons, e.g. `button.press: ir_power`. Swap the `files:` path for any
+remote in the database.
 
-## Notes / limitations
+## Options
 
-- One configured remote per add-on instance for now; on-demand serving of any
-  requested path is on the roadmap.
-- "Valid firmware" ≠ "correct codes." Verify with a `remote_receiver` capture if
+| Option | Default | Notes |
+|--------|---------|-------|
+| `repo` | `Lucaslhm/Flipper-IRDB` | Source database repo. Point it at a fork freely. |
+
+## Notes
+
+- First start pre-generates ~9k components (one `default.git`, ~10 MB); every
+  device then shares one clone instead of one-per-remote.
+- "Valid firmware" ≠ "correct codes" — verify with a `remote_receiver` capture if
   a device doesn't respond.

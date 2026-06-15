@@ -1,6 +1,13 @@
 """Unit tests for the Flipper .ir -> ESPHome transformer."""
 
-from flipper_ir_to_esphome import emit_nec, emit_raw, emit_sony, generate, parse_ir
+from flipper_ir_to_esphome import (
+    _mirror_out,
+    emit_nec,
+    emit_raw,
+    emit_sony,
+    generate,
+    parse_ir,
+)
 
 
 def test_parse_splits_on_hash():
@@ -27,8 +34,9 @@ def test_sony_sirc_packs_command_then_address():
     )
     assert action == "transmit_sony"
     assert args["nbits"] == 12
-    # data = command(0x15) | (address(0x01) << 7) = 0x95
-    assert args["data"] == "0x95"
+    # ESPHome transmits MSB-first: Sony TV "Power" (cmd 21, addr 1) = 0xA90
+    # (the canonical value in ESPHome's docs).
+    assert args["data"] == "0xA90"
 
 
 def test_raw_alternates_sign():
@@ -36,6 +44,12 @@ def test_raw_alternates_sign():
     assert action == "transmit_raw"
     assert args["carrier_frequency"] == 38000
     assert args["code"] == [100, -200, 300, -400]
+
+
+def test_mirror_out_preserves_dirs_and_case():
+    # The served .yaml must match what a device's files: entry references.
+    assert _mirror_out("TVs/Sony/Sony_Bravia.ir") == "TVs/Sony/Sony_Bravia.yaml"
+    assert _mirror_out("ACs/LG/LG_AKB.ir") == "ACs/LG/LG_AKB.yaml"
 
 
 def test_generate_emits_stable_button_id():

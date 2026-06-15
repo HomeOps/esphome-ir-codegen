@@ -39,9 +39,9 @@ RAW_BASE = "https://raw.githubusercontent.com"
 SONY_NBITS = {"SIRC": 12, "SIRC15": 15, "SIRC20": 20}
 
 
-def fetch(ref, path):
-    """Fetch a .ir file from Flipper-IRDB at a pinned ref."""
-    url = f"{RAW_BASE}/{FLIPPER_REPO}/{ref}/{path.lstrip('/')}"
+def fetch(ref, path, repo=FLIPPER_REPO):
+    """Fetch a .ir file from a Flipper-IRDB repo (or fork) at a ref."""
+    url = f"{RAW_BASE}/{repo}/{ref}/{path.lstrip('/')}"
     with urllib.request.urlopen(url, timeout=15) as resp:
         return resp.read().decode("utf-8")
 
@@ -95,12 +95,24 @@ def emit_nec(entry, ext=False):
     return ("transmit_nec", {"address": f"0x{address:04X}", "command": f"0x{command:04X}"})
 
 
+def _bitrev(value, width):
+    """Reverse the low `width` bits of `value`."""
+    result = 0
+    for _ in range(width):
+        result = (result << 1) | (value & 1)
+        value >>= 1
+    return result
+
+
 def emit_sony(entry):
     nbits = SONY_NBITS[entry["protocol"]]
-    address = _le(entry["address"])
-    command = _le(entry["command"]) & 0x7F   # SIRC command is 7 bits
-    # ESPHome sends LSB-first: 7-bit command, then address.
-    data = command | (address << 7)
+    addr_bits = nbits - 7                       # SIRC: 5/8/13-bit address
+    command = _le(entry["command"]) & 0x7F      # 7-bit command
+    address = _le(entry["address"]) & ((1 << addr_bits) - 1)
+    # The wire is command (LSB-first) then address (LSB-first), and ESPHome
+    # transmits `data` MSB-first — so pack bit-reversed command + address.
+    # e.g. Sony TV Power (cmd 21, addr 1) -> 0xA90, matching ESPHome's docs.
+    data = (_bitrev(command, 7) << addr_bits) | _bitrev(address, addr_bits)
     return ("transmit_sony", {"data": f"0x{data:X}", "nbits": nbits})
 
 
@@ -225,17 +237,176 @@ def serve(port=9418, ref="main", path=None, out="component.yaml", tx_id=None, pr
     ])
 
 
+def _mirror_out(path):
+    """Map an .ir path to its .yaml mirror, preserving directory and case.
+
+    'TVs/Sony/Sony_Bravia.ir' -> 'TVs/Sony/Sony_Bravia.yaml'. This is what a
+    device's `files:` entry references, so a bare `path` "just works".
+    """
+    base = path[:-3] if path.endswith(".ir") else os.path.splitext(path)[0]
+    return base + ".yaml"
+
+
+def _default_branch(repo):
+    import json
+    try:
+        with urllib.request.urlopen(f"https://api.github.com/repos/{repo}", timeout=15) as resp:
+            return json.load(resp).get("default_branch") or "main"
+    except Exception:
+        return "main"
+
+
+def _build_mirror(cache, repo, branch):
+    """Generate the WHOLE database as one repo: every `.ir` path holds its
+    generated ESPHome component (not the raw IR). Served as `default.git`, so a
+    device clones once and all devices share that clone. Returns the count.
+    """
+    import re as _re
+    import subprocess
+    import tempfile
+
+    src = tempfile.mkdtemp(prefix="irdb-src-")
+    work = tempfile.mkdtemp(prefix="irdb-mirror-")
+    url = f"https://github.com/{repo}.git"
+
+    def run(*args):
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if _re.fullmatch(r"[0-9a-f]{7,40}", branch or ""):
+        run("git", "init", "-q", src)
+        run("git", "-C", src, "fetch", "--depth", "1", url, branch)
+        run("git", "-C", src, "checkout", "-q", "FETCH_HEAD")
+    else:
+        run("git", "clone", "-q", "--depth", "1", "--branch", branch, url, src)
+
+    count = 0
+    for root, _dirs, files in os.walk(src):
+        if ".git" in root.split(os.sep):
+            continue
+        for filename in files:
+            if not filename.endswith(".ir"):
+                continue
+            rel = os.path.relpath(os.path.join(root, filename), src)
+            try:
+                with open(os.path.join(root, filename), encoding="utf-8", errors="replace") as handle:
+                    component = generate(parse_ir(handle.read()), branch, rel, None, "")
+            except Exception:
+                continue
+            # ESPHome only accepts .yaml/.yml package files, so mirror the path
+            # with a .yaml extension (TVs/Sony/Sony_Bravia.ir -> ....yaml).
+            outpath = os.path.join(work, _mirror_out(rel))
+            os.makedirs(os.path.dirname(outpath), exist_ok=True)
+            with open(outpath, "w", encoding="utf-8") as handle:
+                handle.write(component)
+            count += 1
+
+    def git(*args):
+        subprocess.run(["git", "-C", work, *args], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "codegen@local")
+    git("config", "user.name", "ir-codegen")
+    git("add", "-A")
+    git("commit", "-q", "-m", f"generated {count} components")
+    bare = os.path.join(cache, "default.git")
+    subprocess.run(["git", "clone", "-q", "--bare", work, bare], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return count
+
+
+def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
+    """Serve the whole database as one repo (`default.git`) over smart HTTP.
+
+    Every `.ir` path holds its generated ESPHome component, pre-built at startup,
+    so a device clones once and all devices share that clone:
+
+        packages:
+          x:
+            url: http://<host>:<port>/default.git
+            ref: main
+            files: ["TVs/Sony/Sony_Bravia.ir"]
+
+    Only knob: the source `repo` (a fork works as-is). `ref` is optional (CI pins
+    it; the add-on uses the repo's default branch).
+    """
+    import http.server
+    import subprocess
+    import tempfile
+    from urllib.parse import urlsplit
+
+    branch = ref or _default_branch(repo)
+    cache = tempfile.mkdtemp(prefix="irdb-http-")
+    print(f"building default.git from {repo}@{branch} (first start takes a few minutes) …", flush=True)
+    count = _build_mirror(cache, repo, branch)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self._serve()
+
+        def do_POST(self):
+            self._serve()
+
+        def _serve(self):
+            split = urlsplit(self.path)
+            # Smart HTTP via git-http-backend (supports shallow clones).
+            env = {
+                **os.environ,
+                "GIT_PROJECT_ROOT": cache,
+                "GIT_HTTP_EXPORT_ALL": "1",
+                "PATH_INFO": split.path,
+                "QUERY_STRING": split.query,
+                "REQUEST_METHOD": self.command,
+                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                "GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
+                "REMOTE_ADDR": self.client_address[0],
+            }
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b""
+            proc = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True)
+
+            out = proc.stdout
+            sep = b"\r\n\r\n" if b"\r\n\r\n" in out else b"\n\n"
+            head, _, payload = out.partition(sep)
+            status = 200
+            headers = []
+            for line in head.splitlines():
+                if not line.strip():
+                    continue
+                key, _, val = line.partition(b":")
+                key, val = key.strip(), val.strip()
+                if key.lower() == b"status":
+                    status = int(val.split(b" ")[0])
+                else:
+                    headers.append((key.decode("latin-1"), val.decode("latin-1")))
+            self.send_response(status)
+            for key, val in headers:
+                self.send_header(key, val)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    print(f"git-http: http://0.0.0.0:{port}/default.git  ({count} components, {repo}@{branch})", flush=True)
+    http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--serve", action="store_true", help="run a git:// service ESPHome can pull from")
     parser.add_argument("--from-options", dest="from_options", help="read --serve options from a JSON file (Home Assistant add-on)")
-    parser.add_argument("--port", type=int, default=9418, help="git daemon port for --serve")
-    parser.add_argument("--out", help="component filename served by --serve (default: derived from --path)")
+    parser.add_argument("--port", type=int, default=9418, help="listen port for --serve")
+    parser.add_argument("--repo", default=FLIPPER_REPO, help="source Flipper-IRDB repo or fork (path-less --serve)")
+    parser.add_argument("--out", help="served component path (default: the --path with .yaml, dirs preserved)")
     parser.add_argument("--file", help="local .ir file")
     parser.add_argument("--path", help="path within the Flipper-IRDB repo")
-    parser.add_argument("--ref", default="main", help="Flipper-IRDB git ref — pin for reproducibility")
+    parser.add_argument("--ref", default=None, help="Flipper-IRDB ref to pin (default: the repo's default branch)")
     parser.add_argument("--tx", dest="tx_id", help="remote_transmitter id (omit if you only have one)")
     parser.add_argument("--prefix", default="", help='button name prefix, e.g. "TV"')
     args = parser.parse_args(argv)
@@ -245,25 +416,22 @@ def main(argv=None):
 
         with open(args.from_options, encoding="utf-8") as handle:
             opts = json.load(handle)
-        path = opts.get("path") or None
-        if not path:
-            raise SystemExit("add-on option 'path' is required (e.g. TVs/Sony/Sony_Bravia.ir)")
-        out = opts.get("out") or (os.path.splitext(os.path.basename(path))[0].lower() + ".yaml")
-        serve(
+        # Path-less: the only knob is the source repo (a fork works as-is).
+        serve_http(
             port=int(opts.get("port", 9418)),
-            ref=opts.get("ref", "main"),
-            path=path,
-            out=out,
-            tx_id=opts.get("tx") or None,
-            prefix=opts.get("prefix", ""),
+            repo=opts.get("repo") or FLIPPER_REPO,
+            ref=opts.get("ref"),
         )
         return 0
 
     if args.serve:
-        if not args.path:
-            parser.error("--serve requires --path")
-        out = args.out or (os.path.splitext(os.path.basename(args.path))[0].lower() + ".yaml")
-        serve(port=args.port, ref=args.ref, path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
+        if args.path:
+            # Single-component git:// service (CLI / one-off).
+            out = args.out or _mirror_out(args.path)
+            serve(port=args.port, ref=args.ref or "main", path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
+        else:
+            # Path-less lazy git-over-HTTP service (the add-on).
+            serve_http(port=args.port, repo=args.repo, ref=args.ref)
         return 0
 
     if not args.file and not args.path:
@@ -274,8 +442,8 @@ def main(argv=None):
             text = handle.read()
         ref, src = "(local)", args.file
     else:
-        text = fetch(args.ref, args.path)
-        ref, src = args.ref, args.path
+        text = fetch(args.ref or "main", args.path, repo=args.repo)
+        ref, src = args.ref or "main", args.path
 
     sys.stdout.write(generate(parse_ir(text), ref, src, args.tx_id, args.prefix))
     return 0

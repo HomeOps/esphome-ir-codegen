@@ -6,9 +6,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Pin the Flipper-IRDB DB commit (reproducibility). The *device* (which remote)
-# is chosen only by firmware-test/device.yaml — CI derives the path from it, so
-# no specific TV is named here.
+# CI pins the Flipper-IRDB commit for a deterministic build. The *add-on* never
+# sets a ref (it uses the source repo's default branch); only CI does, via --ref.
 env:
   FLIPPER_REF: d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d
   IMAGE: esphome-ir-codegen:ci
@@ -27,12 +26,11 @@ jobs:
       - run: pytest -q
 
   firmware:
-    name: Sony Bravia → firmware (live Docker service)
+    name: Sony Bravia → firmware (path-less Docker service)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # 1. Build the codegen image (the real image the add-on ships).
       - uses: docker/setup-buildx-action@v3
       - name: Build codegen image
         uses: docker/build-push-action@v6
@@ -43,44 +41,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 2. The device YAML is the only place a remote is named. Derive the
-      #    Flipper .ir path from its `packages: files:` entry (.yaml -> .ir).
-      - name: Resolve target .ir from the device YAML
+      # Start the add-on exactly as Home Assistant would: just the source repo
+      # (default), no path/out. --ref only pins the DB commit for a stable CI.
+      - name: Start codegen service (path-less)
         run: |
-          OUT=$(grep -oP 'files:\s*\[\s*\K[^],\s]+' firmware-test/device.yaml | head -1)
-          if [ -z "$OUT" ]; then echo "no packages files: entry found"; exit 1; fi
-          echo "OUT=$OUT" >> "$GITHUB_ENV"
-          echo "IR_PATH=${OUT%.yaml}.ir" >> "$GITHUB_ENV"
-          echo "device wants $OUT  <-  ${OUT%.yaml}.ir"
-
-      # 3. Start the codegen as a LIVE git service on localhost — no artifacts,
-      #    no device named here; it serves exactly what the device asked for.
-      - name: Start codegen service (git daemon)
-        run: |
-          docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" \
-            --serve --ref "$FLIPPER_REF" --path "$IR_PATH" --out "$OUT"
+          docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" --serve --ref "$FLIPPER_REF"
           ok=
-          for _ in $(seq 1 30); do
-            if git ls-remote git://localhost:9418/irdb.git >/dev/null 2>&1; then
+          # First start generates the whole DB (~9k components) — give it time.
+          for _ in $(seq 1 180); do
+            if git ls-remote http://localhost:9418/default.git >/dev/null 2>&1; then
               ok=1; break
             fi
-            sleep 1
+            sleep 2
           done
           if [ -z "$ok" ]; then
             echo "codegen service did not come up"; docker logs ir-codegen; exit 1
           fi
-          echo "service is up:"; git ls-remote git://localhost:9418/irdb.git
+          echo "service is up"; docker logs ir-codegen | tail -3
 
-      # 3b. Capture the generated component the service is serving — this is the
-      #     useful artifact (the firmware .bin is heavy and not worth keeping).
-      - name: Capture generated component
-        run: |
-          rm -rf _generated
-          git clone -q git://localhost:9418/irdb.git _generated
-          echo "----- $OUT -----"; cat "_generated/$OUT"
-
-      # 4. Compile firmware — ESPHome clones the component from the running
-      #    container via `packages: url: git://localhost:9418/irdb.git`.
+      # ESPHome clones http://localhost:9418/TVs/Sony/Sony_Bravia.git — the URL
+      # path is the only place the remote is named; the component is generated
+      # on demand.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -90,8 +71,15 @@ jobs:
           path: ~/.platformio
           key: pio-${{ runner.os }}-esp32
       - run: pip install esphome
-      - name: Compile firmware (ESPHome pulls from the live service)
+      - name: Compile firmware (pulls per-path from the live service)
         run: esphome compile firmware-test/device.yaml
+
+      - name: Capture the Sony Bravia component (the useful artifact)
+        run: |
+          rm -rf _generated _artifact; mkdir -p _artifact
+          git clone -q http://localhost:9418/default.git _generated
+          cp "_generated/TVs/Sony/Sony_Bravia.yaml" "_artifact/Sony_Bravia.yaml"
+          echo "----- Sony_Bravia -----"; cat _artifact/Sony_Bravia.yaml
 
       - name: Stop codegen service
         if: always()
@@ -101,5 +89,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ir-component
-          path: _generated/**/*.yaml
+          path: _artifact/*.yaml
           if-no-files-found: error
