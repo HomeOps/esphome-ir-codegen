@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.1.2...v0.2.0) (2026-06-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* the flipper adapter is served as `flipper.git`, not `default.git`. Devices must update `packages: url:` accordingly.
+
+### Features
+
+* serve multiple source adapters (flipper + ha-ir) ([#11](https://github.com/HomeOps/esphome-ir-codegen/issues/11)) ([a802de8](https://github.com/HomeOps/esphome-ir-codegen/commit/a802de80278680025d760422f209daee6b63f0a6))
+
 ## [0.1.2](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.1.1...v0.1.2) (2026-06-15)
 
 
