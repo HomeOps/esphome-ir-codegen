@@ -1,5 +1,5 @@
 name: ESPHome IR Codegen
-version: 0.1.1
+version: 0.1.2
 slug: esphome_ir_codegen
 description: Serve Flipper-IRDB IR codes to ESPHome as on-demand git packages
 url: https://github.com/HomeOps/esphome-ir-codegen

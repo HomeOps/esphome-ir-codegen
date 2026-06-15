@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.1.1...v0.1.2) (2026-06-15)
+
+
+### Features
+
+* encode all parsed protocols via the infrared-protocols library ([#9](https://github.com/HomeOps/esphome-ir-codegen/issues/9)) ([fdfb263](https://github.com/HomeOps/esphome-ir-codegen/commit/fdfb26332e8e2031024ebe49c48f25f0f99c10fb))
+
 ## [0.1.1](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.1.0...v0.1.1) (2026-06-15)
 
 
