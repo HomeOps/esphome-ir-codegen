@@ -83,3 +83,21 @@ def test_generate_emits_stable_button_id():
     assert 'name: "Power"' in out
     assert "transmit_raw" in out
     assert "# TODO unsupported" not in out
+
+
+def test_generate_repeats_parsed_but_not_raw():
+    # Library frames are single -> the transmit layer must repeat them (Sony
+    # SIRC needs ~3 frames). A raw capture is authoritative and sent as-is.
+    parsed = generate(
+        [{"name": "Power", "type": "parsed", "protocol": "SIRC",
+          "address": "01 00 00 00", "command": "15 00 00 00"}],
+        "ref", "src", None, "",
+    )
+    assert "repeat:" in parsed
+    assert "times: 3" in parsed
+
+    raw = generate(
+        [{"name": "Power", "type": "raw", "frequency": "40000", "data": "100 200"}],
+        "ref", "src", None, "",
+    )
+    assert "repeat:" not in raw

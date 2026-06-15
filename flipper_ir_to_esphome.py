@@ -42,6 +42,13 @@ RAW_BASE = "https://raw.githubusercontent.com"
 # Flipper SIRC variants -> SonyCommand address width (command is always 7-bit).
 SONY_ADDRESS_BITS = {"SIRC": 5, "SIRC15": 8, "SIRC20": 13}
 
+# The library returns ONE frame per command (by design — repetition is the
+# transmit layer's job, exactly as HA's IR proxy repeats it). In the ESPHome
+# compile path *we* are that layer, so library-encoded signals are sent with a
+# repeat: Sony SIRC and several others need ~3 frames before a device acts.
+PARSED_REPEAT_TIMES = 3
+PARSED_REPEAT_WAIT = "40ms"
+
 
 def fetch(ref, path, repo=FLIPPER_REPO):
     """Fetch a .ir file from a Flipper-IRDB repo (or fork) at a ref."""
@@ -195,6 +202,12 @@ def generate(entries, ref, src, tx_id, prefix):
             out.append(f"          transmitter_id: {tx_id}")
         out.append(f"          carrier_frequency: {args['carrier_frequency']}")
         out.append(f"          code: [{code}]")
+        # Library frames are single — repeat them at the transmit layer. A raw
+        # capture is authoritative (may already include repeats), so send as-is.
+        if typ != "raw":
+            out.append("          repeat:")
+            out.append(f"            times: {PARSED_REPEAT_TIMES}")
+            out.append(f"            wait_time: {PARSED_REPEAT_WAIT}")
 
     for name, why in skipped:
         out.append(f"# TODO unsupported: {name} ({why})")
