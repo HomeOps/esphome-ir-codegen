@@ -19,8 +19,11 @@ logger:
 # The Atom Lite's built-in IR LED.
 remote_transmitter:
   id: ir_tx
-  pin: GPIO12
+  pin:
+    number: GPIO12             # IR LED on a strapping pin — safe for output
+    ignore_strapping_warning: true
   carrier_duty_percent: 50%
+  non_blocking: true           # explicit (default changed in ESPHome 2025.11.0)
 
 # Pull the Sony Bravia component straight from the live codegen Docker service.
 packages:

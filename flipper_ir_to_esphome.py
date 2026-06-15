@@ -225,6 +225,16 @@ def serve(port=9418, ref="main", path=None, out="component.yaml", tx_id=None, pr
     ])
 
 
+def _mirror_out(path):
+    """Map an .ir path to its .yaml mirror, preserving directory and case.
+
+    'TVs/Sony/Sony_Bravia.ir' -> 'TVs/Sony/Sony_Bravia.yaml'. This is what a
+    device's `files:` entry references, so a bare `path` "just works".
+    """
+    base = path[:-3] if path.endswith(".ir") else os.path.splitext(path)[0]
+    return base + ".yaml"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -232,7 +242,7 @@ def main(argv=None):
     parser.add_argument("--serve", action="store_true", help="run a git:// service ESPHome can pull from")
     parser.add_argument("--from-options", dest="from_options", help="read --serve options from a JSON file (Home Assistant add-on)")
     parser.add_argument("--port", type=int, default=9418, help="git daemon port for --serve")
-    parser.add_argument("--out", help="component filename served by --serve (default: derived from --path)")
+    parser.add_argument("--out", help="served component path (default: the --path with .yaml, dirs preserved)")
     parser.add_argument("--file", help="local .ir file")
     parser.add_argument("--path", help="path within the Flipper-IRDB repo")
     parser.add_argument("--ref", default="main", help="Flipper-IRDB git ref — pin for reproducibility")
@@ -248,7 +258,7 @@ def main(argv=None):
         path = opts.get("path") or None
         if not path:
             raise SystemExit("add-on option 'path' is required (e.g. TVs/Sony/Sony_Bravia.ir)")
-        out = opts.get("out") or (os.path.splitext(os.path.basename(path))[0].lower() + ".yaml")
+        out = opts.get("out") or _mirror_out(path)
         serve(
             port=int(opts.get("port", 9418)),
             ref=opts.get("ref", "main"),
@@ -262,7 +272,7 @@ def main(argv=None):
     if args.serve:
         if not args.path:
             parser.error("--serve requires --path")
-        out = args.out or (os.path.splitext(os.path.basename(args.path))[0].lower() + ".yaml")
+        out = args.out or _mirror_out(args.path)
         serve(port=args.port, ref=args.ref, path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
         return 0
 

@@ -58,7 +58,7 @@ jobs:
       - name: Start codegen service (git daemon)
         run: |
           docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" \
-            --serve --ref "$FLIPPER_REF" --path "$IR_PATH" --out "$OUT"
+            --serve --ref "$FLIPPER_REF" --path "$IR_PATH"
           ok=
           for _ in $(seq 1 30); do
             if git ls-remote git://localhost:9418/irdb.git >/dev/null 2>&1; then
