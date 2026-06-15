@@ -7,3 +7,6 @@ venv/
 # Local test artifacts
 *.ir
 !examples/*.ir
+
+# ESPHome build output
+.esphome/
