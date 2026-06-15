@@ -1,9 +1,8 @@
 # CI compile target — an M5 Atom Lite whose front button toggles a Sony Bravia.
 #
-# The component is pulled on demand from the path-less codegen service: the URL
-# path IS the Flipper-IRDB path (with .git), and the component is generated from
-# the matching .ir at request time. The device URL is the ONLY place a remote is
-# named — the add-on itself takes no path/ref/out.
+# The add-on serves the whole Flipper-IRDB as one git repo (default.git), where
+# each .ir path holds its generated ESPHome component as .yaml. ESPHome clones it
+# once and `files:` selects the remote — the only place a remote is named.
 esphome:
   name: ir-codegen-test
 
@@ -31,7 +30,7 @@ packages:
     url: http://localhost:9418/default.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]
-    refresh: 0s
+    refresh: 1d                # clone once, then reuse — never 0s (re-clones every build)
 
 # The Atom's front "clicker" button (G39) sends the Sony power toggle by pressing
 # the generated `ir_power` button (which transmits via the IR LED above).
