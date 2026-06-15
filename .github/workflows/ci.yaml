@@ -78,7 +78,7 @@ jobs:
         run: |
           rm -rf _generated _artifact; mkdir -p _artifact
           git clone -q http://localhost:9418/default.git _generated
-          cp "_generated/TVs/Sony/Sony_Bravia.ir" "_artifact/Sony_Bravia.yaml"
+          cp "_generated/TVs/Sony/Sony_Bravia.yaml" "_artifact/Sony_Bravia.yaml"
           echo "----- Sony_Bravia -----"; cat _artifact/Sony_Bravia.yaml
 
       - name: Stop codegen service

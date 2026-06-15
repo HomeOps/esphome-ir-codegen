@@ -32,7 +32,7 @@ packages:                          # <- codes pulled LIVE from the codegen servi
   sony_bravia:
     url: http://948146ed-esphome-ir-codegen:9418/default.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.ir]     # the Flipper path selects the remote
+    files: [TVs/Sony/Sony_Bravia.yaml]     # the Flipper path selects the remote
 
 binary_sensor:
   - platform: gpio
@@ -132,7 +132,7 @@ packages:
   tv:
     url: http://localhost:9418/default.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.ir]
+    files: [TVs/Sony/Sony_Bravia.yaml]
     refresh: 0s
 ```
 
@@ -180,7 +180,7 @@ packages:
   tv_codes:
     url: http://<addon-host>:9418/default.git    # one repo, cloned once
     ref: main
-    files: [TVs/Sony/Sony_Bravia.ir]             # the Flipper path = the remote
+    files: [TVs/Sony/Sony_Bravia.yaml]             # the Flipper path = the remote
     refresh: 0s
 ```
 
@@ -224,7 +224,7 @@ repository — see [`addon/`](addon/) and [`repository.yaml`](repository.yaml)):
      tv:
        url: http://<addon-host>:9418/default.git
        ref: main
-       files: [TVs/Sony/Sony_Bravia.ir]
+       files: [TVs/Sony/Sony_Bravia.yaml]
        refresh: 0s
    ```
 

@@ -24,7 +24,7 @@ packages:
   tv:
     url: http://<addon-host>:9418/default.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.ir]      # the exact Flipper-IRDB path
+    files: [TVs/Sony/Sony_Bravia.yaml]      # the exact Flipper-IRDB path
     refresh: 0s
 ```
 

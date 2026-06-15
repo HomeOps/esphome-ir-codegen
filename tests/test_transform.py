@@ -34,8 +34,9 @@ def test_sony_sirc_packs_command_then_address():
     )
     assert action == "transmit_sony"
     assert args["nbits"] == 12
-    # data = command(0x15) | (address(0x01) << 7) = 0x95
-    assert args["data"] == "0x95"
+    # ESPHome transmits MSB-first: Sony TV "Power" (cmd 21, addr 1) = 0xA90
+    # (the canonical value in ESPHome's docs).
+    assert args["data"] == "0xA90"
 
 
 def test_raw_alternates_sign():

@@ -95,12 +95,24 @@ def emit_nec(entry, ext=False):
     return ("transmit_nec", {"address": f"0x{address:04X}", "command": f"0x{command:04X}"})
 
 
+def _bitrev(value, width):
+    """Reverse the low `width` bits of `value`."""
+    result = 0
+    for _ in range(width):
+        result = (result << 1) | (value & 1)
+        value >>= 1
+    return result
+
+
 def emit_sony(entry):
     nbits = SONY_NBITS[entry["protocol"]]
-    address = _le(entry["address"])
-    command = _le(entry["command"]) & 0x7F   # SIRC command is 7 bits
-    # ESPHome sends LSB-first: 7-bit command, then address.
-    data = command | (address << 7)
+    addr_bits = nbits - 7                       # SIRC: 5/8/13-bit address
+    command = _le(entry["command"]) & 0x7F      # 7-bit command
+    address = _le(entry["address"]) & ((1 << addr_bits) - 1)
+    # The wire is command (LSB-first) then address (LSB-first), and ESPHome
+    # transmits `data` MSB-first — so pack bit-reversed command + address.
+    # e.g. Sony TV Power (cmd 21, addr 1) -> 0xA90, matching ESPHome's docs.
+    data = (_bitrev(command, 7) << addr_bits) | _bitrev(address, addr_bits)
     return ("transmit_sony", {"data": f"0x{data:X}", "nbits": nbits})
 
 
@@ -280,7 +292,9 @@ def _build_mirror(cache, repo, branch):
                     component = generate(parse_ir(handle.read()), branch, rel, None, "")
             except Exception:
                 continue
-            outpath = os.path.join(work, rel)
+            # ESPHome only accepts .yaml/.yml package files, so mirror the path
+            # with a .yaml extension (TVs/Sony/Sony_Bravia.ir -> ....yaml).
+            outpath = os.path.join(work, _mirror_out(rel))
             os.makedirs(os.path.dirname(outpath), exist_ok=True)
             with open(outpath, "w", encoding="utf-8") as handle:
                 handle.write(component)
