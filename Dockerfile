@@ -1,12 +1,13 @@
 # Codegen image — Flipper-IRDB -> ESPHome transformer.
 #
-#   CLI:    docker run IMAGE --path <Category>/<Brand>/<Model>.ir --ref <sha>
-#   serve:  docker run -p 9418:9418 IMAGE --serve --path <...> --out <...> --ref <sha>
-#           -> serves git://<host>:9418/irdb.git, which ESPHome pulls via
-#              `packages: { url: "git://<host>:9418/irdb.git", files: [...] }`
+#   serve:  docker run -p 9418:9418 IMAGE --serve           (path-less; the add-on)
+#           -> lazy git-over-HTTP. A device clones
+#              http://<host>:9418/<Flipper/path>.git and the component is
+#              generated on demand. Only knob: --repo (a Flipper-IRDB fork).
+#   CLI:    docker run IMAGE --path <Cat>/<Brand>/<Model>.ir  (print one component)
 FROM python:3.12-slim
 
-# git is required for --serve (the component is served by `git daemon`).
+# git is required for --serve (components are served as git repos).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*

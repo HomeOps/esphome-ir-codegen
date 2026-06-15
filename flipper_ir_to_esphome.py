@@ -39,9 +39,9 @@ RAW_BASE = "https://raw.githubusercontent.com"
 SONY_NBITS = {"SIRC": 12, "SIRC15": 15, "SIRC20": 20}
 
 
-def fetch(ref, path):
-    """Fetch a .ir file from Flipper-IRDB at a pinned ref."""
-    url = f"{RAW_BASE}/{FLIPPER_REPO}/{ref}/{path.lstrip('/')}"
+def fetch(ref, path, repo=FLIPPER_REPO):
+    """Fetch a .ir file from a Flipper-IRDB repo (or fork) at a ref."""
+    url = f"{RAW_BASE}/{repo}/{ref}/{path.lstrip('/')}"
     with urllib.request.urlopen(url, timeout=15) as resp:
         return resp.read().decode("utf-8")
 
@@ -235,17 +235,96 @@ def _mirror_out(path):
     return base + ".yaml"
 
 
+def _default_branch(repo):
+    import json
+    try:
+        with urllib.request.urlopen(f"https://api.github.com/repos/{repo}", timeout=15) as resp:
+            return json.load(resp).get("default_branch") or "main"
+    except Exception:
+        return "main"
+
+
+def _ensure_repo(cache, repo, branch, flipper_path):
+    """Generate (once) a bare git repo for <flipper_path> from <flipper_path>.ir."""
+    import subprocess
+    import tempfile
+
+    repodir = os.path.join(cache, flipper_path + ".git")
+    if os.path.isdir(repodir):
+        return
+    text = fetch(branch, flipper_path + ".ir", repo=repo)
+    yaml = generate(parse_ir(text), branch, flipper_path + ".ir", None, "")
+    work = tempfile.mkdtemp()
+    name = os.path.basename(flipper_path) + ".yaml"
+    with open(os.path.join(work, name), "w", encoding="utf-8") as handle:
+        handle.write(yaml)
+
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    git("init", "-q", "-b", "main", cwd=work)
+    git("config", "user.email", "codegen@local", cwd=work)
+    git("config", "user.name", "ir-codegen", cwd=work)
+    git("add", "-A", cwd=work)
+    git("commit", "-q", "-m", name, cwd=work)
+    os.makedirs(os.path.dirname(repodir), exist_ok=True)
+    subprocess.run(["git", "clone", "-q", "--bare", work, repodir], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    git("update-server-info", cwd=repodir)
+
+
+def serve_http(port=9418, repo=FLIPPER_REPO, ref=None):
+    """Lazy git-over-HTTP — the path-less add-on mode.
+
+    A device clones `http://<host>:<port>/<Flipper/path>.git`; the component is
+    generated on first request from `<path>.ir` in `repo`. The only knob is the
+    source repo, so pointing at a fork is trivial. `ref` is optional (defaults to
+    the repo's default branch); CI pins it for determinism.
+    """
+    import http.server
+    import re as _re
+    import tempfile
+    import threading
+
+    branch = ref or _default_branch(repo)
+    cache = tempfile.mkdtemp(prefix="irdb-http-")
+    lock = threading.Lock()
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=cache, **kwargs)
+
+        def do_GET(self):
+            match = _re.match(r"^/(.+?\.git)/", self.path)
+            if match:
+                try:
+                    with lock:
+                        _ensure_repo(cache, repo, branch, match.group(1)[:-4])
+                except Exception as err:
+                    self.send_error(404, f"cannot generate: {err}")
+                    return
+            super().do_GET()
+
+        def log_message(self, *args):
+            pass
+
+    print(f"git-http: http://0.0.0.0:{port}/<Flipper/path>.git  (source {repo}@{branch})", flush=True)
+    http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--serve", action="store_true", help="run a git:// service ESPHome can pull from")
     parser.add_argument("--from-options", dest="from_options", help="read --serve options from a JSON file (Home Assistant add-on)")
-    parser.add_argument("--port", type=int, default=9418, help="git daemon port for --serve")
+    parser.add_argument("--port", type=int, default=9418, help="listen port for --serve")
+    parser.add_argument("--repo", default=FLIPPER_REPO, help="source Flipper-IRDB repo or fork (path-less --serve)")
     parser.add_argument("--out", help="served component path (default: the --path with .yaml, dirs preserved)")
     parser.add_argument("--file", help="local .ir file")
     parser.add_argument("--path", help="path within the Flipper-IRDB repo")
-    parser.add_argument("--ref", default="main", help="Flipper-IRDB git ref — pin for reproducibility")
+    parser.add_argument("--ref", default=None, help="Flipper-IRDB ref to pin (default: the repo's default branch)")
     parser.add_argument("--tx", dest="tx_id", help="remote_transmitter id (omit if you only have one)")
     parser.add_argument("--prefix", default="", help='button name prefix, e.g. "TV"')
     args = parser.parse_args(argv)
@@ -255,25 +334,22 @@ def main(argv=None):
 
         with open(args.from_options, encoding="utf-8") as handle:
             opts = json.load(handle)
-        path = opts.get("path") or None
-        if not path:
-            raise SystemExit("add-on option 'path' is required (e.g. TVs/Sony/Sony_Bravia.ir)")
-        out = opts.get("out") or _mirror_out(path)
-        serve(
+        # Path-less: the only knob is the source repo (a fork works as-is).
+        serve_http(
             port=int(opts.get("port", 9418)),
-            ref=opts.get("ref", "main"),
-            path=path,
-            out=out,
-            tx_id=opts.get("tx") or None,
-            prefix=opts.get("prefix", ""),
+            repo=opts.get("repo") or FLIPPER_REPO,
+            ref=opts.get("ref"),
         )
         return 0
 
     if args.serve:
-        if not args.path:
-            parser.error("--serve requires --path")
-        out = args.out or _mirror_out(args.path)
-        serve(port=args.port, ref=args.ref, path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
+        if args.path:
+            # Single-component git:// service (CLI / one-off).
+            out = args.out or _mirror_out(args.path)
+            serve(port=args.port, ref=args.ref or "main", path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
+        else:
+            # Path-less lazy git-over-HTTP service (the add-on).
+            serve_http(port=args.port, repo=args.repo, ref=args.ref)
         return 0
 
     if not args.file and not args.path:
@@ -284,8 +360,8 @@ def main(argv=None):
             text = handle.read()
         ref, src = "(local)", args.file
     else:
-        text = fetch(args.ref, args.path)
-        ref, src = args.ref, args.path
+        text = fetch(args.ref or "main", args.path, repo=args.repo)
+        ref, src = args.ref or "main", args.path
 
     sys.stdout.write(generate(parse_ir(text), ref, src, args.tx_id, args.prefix))
     return 0

@@ -1,7 +1,7 @@
 name: ESPHome IR Codegen
-version: "0.1.0"
+version: "0.1.0"  # x-release-please-version
 slug: esphome_ir_codegen
-description: Serve Flipper-IRDB IR codes to ESPHome as a git:// package source
+description: Serve Flipper-IRDB IR codes to ESPHome as on-demand git packages
 url: https://github.com/HomeOps/esphome-ir-codegen
 arch:
   - aarch64
@@ -9,20 +9,13 @@ arch:
 startup: services
 boot: auto
 init: false
-# git daemon — point ESPHome `packages: url: git://<host>:9418/irdb.git` here.
 ports:
   9418/tcp: 9418
 ports_description:
-  9418/tcp: git daemon for ESPHome `packages:` clones
-# Which remote to serve. Leave defaults blank and set `path` (the Flipper-IRDB
-# .ir path); `out` defaults to the same path with a .yaml extension.
+  9418/tcp: git-over-HTTP — ESPHome packages clone from here
+# The ONLY option: the source IR database repo. Point it at a fork freely.
+# No path/ref/out — the device's package URL selects the remote on demand.
 options:
-  ref: main
-  path: ""
-  out: ""
-  port: 9418
+  repo: Lucaslhm/Flipper-IRDB
 schema:
-  ref: str
-  path: str
-  out: str?
-  port: int?
+  repo: str

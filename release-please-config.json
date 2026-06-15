@@ -4,6 +4,7 @@
     ".": {
       "release-type": "simple",
       "changelog-path": "CHANGES.md",
+      "extra-files": ["addon/config.yaml"],
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true
     }
