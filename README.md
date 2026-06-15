@@ -1,15 +1,20 @@
-# Flipper-IRDB → ESPHome codegen (Home Assistant add-on)
+# IR code sets → ESPHome codegen (Home Assistant add-on)
 
-Turn the whole [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) into
-ready-to-use ESPHome `remote_transmitter` components, served as one git repo your
-ESPHome YAML clones like any other remote package source — no IR codes in your
-config, just a path to a remote in the database.
+Turn open IR code databases into ready-to-use ESPHome `remote_transmitter`
+components. The add-on serves each source as its own git repo your ESPHome YAML
+clones like any other remote package — no IR codes in your config, just a path to
+a remote. Two sources (**adapters**) ship today: the whole
+[Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) (`flipper.git`) and Home
+Assistant's curated
+[infrared-protocols](https://github.com/home-assistant-libs/infrared-protocols)
+code sets (`ha-ir.git`). See [Adapters](#adapters).
 
 > **Status:** working transformer + Dockerized **smart-HTTP git service** +
-> Home Assistant add-on. An end-to-end CI test stands up the container and has
-> **ESPHome clone the component from it** to build real firmware (see
-> [CI](#ci-the-sony-bravia-end-to-end-test)), and it's been verified on real
-> hardware against a live TV. Next: more protocols — see [Roadmap](#roadmap).
+> Home Assistant add-on, serving the `flipper` + `ha-ir` adapters. An end-to-end
+> CI test stands up the container and has **ESPHome clone a component from each
+> adapter** to build real firmware (see [CI](#ci-the-end-to-end-test)). The
+> flipper Sony Bravia path is also verified on real hardware against a live TV;
+> ha-ir is compile-verified only. Next: more protocols — see [Roadmap](#roadmap).
 
 ## Showcase: a ~$20 universal remote
 
@@ -35,7 +40,6 @@ packages:                          # <- codes pulled LIVE from the codegen servi
     url: http://<addon-host>:9418/flipper.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]     # the Flipper path selects the remote
-    refresh: 1d                            # clone once, then reuse (never 0s)
 
 binary_sensor:
   - platform: gpio
@@ -45,12 +49,13 @@ binary_sensor:
 ```
 
 The point: **there are no IR codes in your config** — just a reference to a device
-in a community database. The add-on builds the whole DB into one `flipper.git`
-repo (each `.ir` mirrored to a `.yaml` component); the `files:` path *is* the
-selector: `TVs/Sony/Sony_Bravia.yaml` is the generated form of
+in a community database. The flipper adapter builds the whole Flipper-IRDB into
+the `flipper.git` repo (each `.ir` mirrored to a `.yaml` component); the `files:`
+path *is* the selector: `TVs/Sony/Sony_Bravia.yaml` is the generated form of
 `TVs/Sony/Sony_Bravia.ir`. Swap it for any of the thousands of remotes in
 Flipper-IRDB and reflash — that one line is the only place a specific remote is
-named, and the clone is shared across every device that points at it.
+named, and the clone is shared across every device that points at it. (For
+curated codes, point `url:` at `ha-ir.git` instead — see [Adapters](#adapters).)
 
 ### Why this matters
 
@@ -135,24 +140,26 @@ docker run --rm esphome-ir-codegen \
 Real usage — run it as a **service** and let ESPHome clone from it:
 
 ```bash
-docker run -d -p 9418:9418 esphome-ir-codegen --serve   # whole DB; add --repo for a fork
+docker run -d -p 9418:9418 esphome-ir-codegen --serve   # builds flipper.git + ha-ir.git
+#   --repo <fork>          flipper adapter source (a Flipper-IRDB fork)
+#   --adapters flipper     serve only one (default: flipper,ha-ir)
 ```
 
 ```yaml
-# in your ESPHome device config — clones the shared DB once, picks a remote by path:
+# in your ESPHome device config — clones the adapter once, picks a remote by path:
 packages:
   tv:
-    url: http://localhost:9418/flipper.git
+    url: http://localhost:9418/flipper.git   # or ha-ir.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]
-    refresh: 1d
 ```
 
-**How the remote is resolved:** the service builds the entire Flipper-IRDB into
-one `flipper.git` repo, mirroring each `TVs/Sony/Sony_Bravia.ir` to a generated
-`TVs/Sony/Sony_Bravia.yaml`. ESPHome clones that single repo (smart HTTP, shallow)
-and `files:` selects the component. The add-on is generic (its only knob is the
-source `repo`); the device's `files:` path decides the *remote*.
+**How the remote is resolved:** the flipper adapter builds the entire Flipper-IRDB
+into the `flipper.git` repo, mirroring each `TVs/Sony/Sony_Bravia.ir` to a
+generated `TVs/Sony/Sony_Bravia.yaml`. ESPHome clones that repo (smart HTTP,
+shallow) and `files:` selects the component. The add-on's knobs are the flipper
+source `repo` and `adapters` (which repos to serve); the device's `files:` path
+decides the *remote*.
 
 ## Adapters
 
@@ -175,7 +182,6 @@ packages:
     url: http://<addon-host>:9418/ha-ir.git   # or flipper.git
     ref: main
     files: [vizio/tv.yaml]
-    refresh: 1d
 ```
 
 `git http-backend` serves any repo under its root, so adding an adapter is just
@@ -183,14 +189,16 @@ another `<name>.git` — the encoder never changes.
 
 ## Design (locked decisions)
 
-1. **The flipper adapter's only knob is the source `repo`.** Default
-   `Lucaslhm/Flipper-IRDB`; point it at a fork if you maintain one. The *device*
-   YAML pins `ref:` and selects the remote via `files:`, so one running add-on
-   serves every device. (The ha-ir adapter needs no repo — its source is the
-   installed infrared-protocols version.)
+1. **Minimal config: `repo` + `adapters`.** `repo` is the flipper source
+   (default `Lucaslhm/Flipper-IRDB`; point it at a fork if you maintain one);
+   `adapters` selects which repos to serve (default both). The ha-ir adapter
+   needs no repo — its source is the installed infrared-protocols version. The
+   *device* YAML pins `ref:` and selects the remote via `files:`, so one running
+   add-on serves every device.
 2. **One shared repo per adapter.** Each adapter builds its components into a
    single bare repo; ESPHome clones it once and reuses the cache across every
-   device that points at it (with `refresh: 1d`, not `0s`).
+   device that points at it (ESPHome's default `refresh` is `1d` — just don't
+   set `0s`, which re-clones on every build).
 3. **Live-service dependency is acceptable.** ESPHome clones from the add-on at
    compile time; if it's down, the build fails. Codes are pinned by the device's
    `ref:`, so a green build is reproducible.
@@ -200,13 +208,16 @@ another `<name>.git` — the encoder never changes.
 ## Architecture
 
 ```
-ESPHome build  ──packages: url/files──▶  HA add-on (flipper.git)  ──build once──▶  Flipper-IRDB
-   (compile)         clone + select        smart-HTTP git service      from repo      (source repo)
+                                        ┌─ flipper.git ◀─ Flipper-IRDB (.ir files)
+ESPHome build ──packages: url/files──▶ HA add-on ┤        (smart-HTTP git service)
+   (compile)        clone + select               └─ ha-ir.git ◀─ infrared-protocols code sets
         ◀──────── generated ESPHome YAML component (buttons) ─────────
 ```
 
-**Transformer core** (done): parse `.ir` → emit ESPHome `button` entities, one
-per signal, each calling `remote_transmitter.transmit_*`.
+**Transformer core** (done): turn each IR signal into an ESPHome `button` entity
+calling `remote_transmitter.transmit_raw`. The flipper adapter parses `.ir` files;
+the ha-ir adapter reads infrared-protocols `Command`s. Both encode through the
+same library, so all output is `transmit_raw`.
 
 **Serving layer** (done): ESPHome remote `packages:` are git-based, so the add-on
 builds **one bare repo per adapter** (`flipper.git`, `ha-ir.git`) and serves them
@@ -227,7 +238,6 @@ packages:
     url: http://<addon-host>:9418/flipper.git    # one repo, cloned once
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]             # the Flipper path = the remote
-    refresh: 1d
 ```
 
 ## Transformer — current coverage
@@ -275,10 +285,11 @@ repository — see [`addon/`](addon/) and [`repository.yaml`](repository.yaml)):
 
 1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add
    `https://github.com/HomeOps/esphome-ir-codegen`.
-2. Install **ESPHome IR Codegen** and **Start** it. The only option is `repo`
-   (default `Lucaslhm/Flipper-IRDB`; point it at a fork if you like). First start
-   builds the whole DB (a few minutes), then it's cached.
-3. Point ESPHome at the shared `flipper.git` and pick a remote by path:
+2. Install **ESPHome IR Codegen** and **Start** it. Options: `repo` (the flipper
+   source — default `Lucaslhm/Flipper-IRDB`; point it at a fork if you like) and
+   `adapters` (default `flipper,ha-ir`). First start builds the flipper DB (a few
+   minutes) plus the ha-ir code sets, then it's cached.
+3. Point ESPHome at `flipper.git` (or `ha-ir.git`) and pick a remote by path:
 
    ```yaml
    packages:
@@ -286,33 +297,31 @@ repository — see [`addon/`](addon/) and [`repository.yaml`](repository.yaml)):
        url: http://<addon-host>:9418/flipper.git
        ref: main
        files: [TVs/Sony/Sony_Bravia.yaml]
-       refresh: 1d
-   ```
+      ```
 
 The add-on image is built FROM the published GHCR image and just adds an
 options-reading entrypoint (no script duplication). Full usage: [`addon/DOCS.md`](addon/DOCS.md).
 
-## CI: the Sony Bravia end-to-end test
+## CI: the end-to-end test
 
 Every push and PR runs the real thing (`.github/workflows/ci.yaml`), exercising
 the add-on **as a live service** — not a pre-generated file:
 
 1. **Build** the codegen Docker image.
-2. **Start** it as a running container serving `http://localhost:9418/flipper.git`
-   (the whole DB, generated from a pinned Flipper-IRDB ref via `--ref` so the
-   build is deterministic).
-3. **Compile** real ESP32 firmware (`firmware-test/device.yaml`) whose
-   `packages:` block **clones the component from that running container** and
-   selects `files: [TVs/Sony/Sony_Bravia.yaml]`. ESPHome pulls from the live
-   service — nothing is pre-generated into the repo.
-4. **Capture** the generated `Sony_Bravia.yaml` component and upload it as the
-   build artifact (the `.bin` is intentionally *not* kept — the useful output is
-   the generated YAML).
+2. **Start** it as a running container serving both `flipper.git` and `ha-ir.git`
+   (the flipper repo is generated from a pinned Flipper-IRDB ref via `--ref` so
+   the build is deterministic).
+3. **Compile** real ESP32 firmware, one device per adapter, each **cloning its
+   component from that running container**:
+   - `firmware-test/device.yaml` → `flipper.git`, `files: [TVs/Sony/Sony_Bravia.yaml]`
+   - `firmware-test/device-ha-ir.yaml` → `ha-ir.git`, `files: [vizio/tv.yaml]`
+4. **Capture** both generated components and upload them as the build artifact
+   (the `.bin` is intentionally *not* kept — the useful output is the YAML).
 
-If the served YAML were malformed, step 3 fails — so a green build means the live
-service produces **valid firmware**. (Validity ≠ correctness: that the codes are
-the *right* ones for your TV is verified separately against a live
-`remote_receiver` capture, and on real hardware.) This Sony Bravia run is the
+If a served component were malformed, step 3 fails — so a green build means each
+adapter produces **valid firmware**. (Validity ≠ correctness: that the codes are
+the *right* ones for your device is verified separately against a live
+`remote_receiver` capture, and on real hardware.) These compiles are the
 regression test guarding every future PR.
 
 Releases use [release-please](https://github.com/googleapis/release-please)
@@ -322,11 +331,14 @@ the release-please run itself (`.github/workflows/release-please.yaml`).
 
 ## Roadmap
 
-- [x] Parsed-protocol coverage: Sony (SIRC/SIRC15/SIRC20). NEC/NECext + raw.
-- [x] `Dockerfile` + end-to-end CI (Sony Bravia → firmware).
-- [x] Smart-HTTP git backend serving the whole DB as one `flipper.git`.
-- [x] HA add-on packaging (`addon/config.yaml`, single `repo` option).
-- [ ] More parsed protocols: Samsung32, RC5/RC6, Panasonic, Pioneer — each
+- [x] Parsed-protocol coverage: NEC/NECext, Sony (SIRC/SIRC15/SIRC20),
+      Samsung32, RC5/RC5X, Sharp — all via infrared-protocols. Plus raw.
+- [x] `Dockerfile` + end-to-end CI (Sony Bravia + Vizio TV → firmware).
+- [x] Smart-HTTP git backend, one repo per adapter (`flipper.git`, `ha-ir.git`).
+- [x] HA add-on packaging (`addon/config.yaml`, `repo` + `adapters` options).
+- [ ] More parsed protocols: RC6, Panasonic/Kaseikyo, Pioneer, NEC42 — each
       verified against a receiver capture.
+- [ ] A runtime adapter that pushes codes to HA's `ir_rf_proxy` (no recompile
+      to switch remotes).
 - [ ] On-demand generation (vs. whole DB at container start) to cut first-boot.
 - [ ] Button-set selection / naming / dedup.
