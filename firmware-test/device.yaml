@@ -30,8 +30,7 @@ packages:
   sony_bravia:
     url: http://localhost:9418/flipper.git
     ref: main
-    files: [TVs/Sony/Sony_Bravia.yaml]
-    refresh: 1d                # clone once, then reuse — never 0s (re-clones every build)
+    files: [TVs/Sony/Sony_Bravia.yaml]   # refresh defaults to 1d — never set 0s
 
 # The Atom's front "clicker" button (G39) sends the Sony power toggle by pressing
 # the generated `ir_power` button (which transmits via the IR LED above).

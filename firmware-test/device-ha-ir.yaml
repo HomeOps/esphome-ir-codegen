@@ -27,7 +27,6 @@ packages:
     url: http://localhost:9418/ha-ir.git
     ref: main
     files: [vizio/tv.yaml]
-    refresh: 1d
 
 binary_sensor:
   - platform: gpio

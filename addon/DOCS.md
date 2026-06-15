@@ -32,7 +32,6 @@ packages:
     url: http://<addon-host>:9418/flipper.git   # or ha-ir.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]      # flipper path (ha-ir: vizio/tv.yaml)
-    refresh: 1d                             # clone once, then reuse (see gotchas)
 ```
 
 `<addon-host>` is the add-on hostname (e.g. `948146ed-esphome-ir-codegen` — the
@@ -81,7 +80,6 @@ packages:
     url: http://<addon-host>:9418/flipper.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]
-    refresh: 1d
 
 binary_sensor:
   - platform: gpio
@@ -103,11 +101,11 @@ binary_sensor:
 
 ## Gotchas (learned on real hardware)
 
-- **Use `refresh: 1d`, never `refresh: 0s`.** `0s` makes ESPHome re-clone on
-  *every* validation — and because the dashboard auto-validates, overlapping
-  shallow clones corrupt the package cache (`shallow.lock`/`ambiguous argument
-  HEAD` errors). `1d` clones once and reuses it. If you already hit this, clear
-  `/data/packages` in the ESPHome add-on and recompile.
+- **Never set `refresh: 0s`.** ESPHome's default `refresh` (`1d`) is what you
+  want — leave it off. `0s` makes ESPHome re-clone on *every* validation, and
+  because the dashboard auto-validates, overlapping shallow clones corrupt the
+  package cache (`shallow.lock`/`ambiguous argument HEAD` errors). If you already
+  hit this, clear `/data/packages` in the ESPHome add-on and recompile.
 - **After restarting this add-on, restart the ESPHome add-on too** (or use the
   host IP instead of the hostname). The add-on's container IP changes on restart;
   ESPHome caches the old DNS answer and fails with "couldn't connect". The host
@@ -117,6 +115,6 @@ binary_sensor:
   across devices.
 - **"Valid firmware" ≠ "correct codes."** A green compile only proves the YAML is
   valid. If a device doesn't respond, verify the codes with a `remote_receiver`
-  capture. Note Sony devices in particular often need the frame repeated (the
-  generated component handles common cases; a stubborn TV may need a manual
-  `repeat:`).
+  capture. Every parsed (library-encoded) signal already ships with a built-in
+  `repeat:` (×3) — Sony SIRC and others need it; only `raw` captures are sent
+  as-is.
