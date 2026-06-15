@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.1.0...v0.1.1) (2026-06-15)
+
+
+### Features
+
+* path-less add-on (one repo param) serving the whole DB as default.git ([#5](https://github.com/HomeOps/esphome-ir-codegen/issues/5)) ([aba40f5](https://github.com/HomeOps/esphome-ir-codegen/commit/aba40f5ea1377b9e16ec367f7452fe58ab896400))
+
 ## 0.1.0 (2026-06-15)
 
 
