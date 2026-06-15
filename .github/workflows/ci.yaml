@@ -71,6 +71,14 @@ jobs:
           fi
           echo "service is up:"; git ls-remote git://localhost:9418/irdb.git
 
+      # 3b. Capture the generated component the service is serving — this is the
+      #     useful artifact (the firmware .bin is heavy and not worth keeping).
+      - name: Capture generated component
+        run: |
+          rm -rf _generated
+          git clone -q git://localhost:9418/irdb.git _generated
+          echo "----- $OUT -----"; cat "_generated/$OUT"
+
       # 4. Compile firmware — ESPHome clones the component from the running
       #    container via `packages: url: git://localhost:9418/irdb.git`.
       - uses: actions/setup-python@v5
@@ -89,9 +97,9 @@ jobs:
         if: always()
         run: docker rm -f ir-codegen || true
 
-      - name: Upload firmware
+      - name: Upload generated component
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-sony-bravia
-          path: firmware-test/.esphome/build/**/*.bin
-          if-no-files-found: warn
+          name: ir-component
+          path: _generated/**/*.yaml
+          if-no-files-found: error
