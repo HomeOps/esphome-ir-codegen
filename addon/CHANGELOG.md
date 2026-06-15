@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.2.0...v0.2.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **addon:** put the changelog where Home Assistant looks for it ([#14](https://github.com/HomeOps/esphome-ir-codegen/issues/14)) ([e9be74c](https://github.com/HomeOps/esphome-ir-codegen/commit/e9be74c51d3f602f0051eb83623172df7f172114))
+
 ## [0.2.0](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.1.2...v0.2.0) (2026-06-15)
 
 
