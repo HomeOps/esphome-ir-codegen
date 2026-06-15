@@ -316,9 +316,9 @@ the *right* ones for your TV is verified separately against a live
 regression test guarding every future PR.
 
 Releases use [release-please](https://github.com/googleapis/release-please)
-(changelog in [`CHANGES.md`](CHANGES.md)); a tagged release publishes the image
-to GHCR from the release-please run itself
-(`.github/workflows/release-please.yaml`).
+(changelog in [`addon/CHANGELOG.md`](addon/CHANGELOG.md), where Home Assistant's
+add-on update dialog reads it); a tagged release publishes the image to GHCR from
+the release-please run itself (`.github/workflows/release-please.yaml`).
 
 ## Roadmap
 
