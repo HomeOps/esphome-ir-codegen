@@ -8,6 +8,5 @@ venv/
 *.ir
 !examples/*.ir
 
-# Generated IR component + ESPHome build output (produced at build/CI time)
-firmware-test/generated/*.yaml
+# ESPHome build output
 .esphome/

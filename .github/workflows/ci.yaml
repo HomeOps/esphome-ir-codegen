@@ -6,11 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Pinned Flipper-IRDB source — reproducibility comes from the ref (locked
-# design decision). Bump deliberately; never float to a moving branch in CI.
+# Pin the Flipper-IRDB DB commit (reproducibility). The *device* (which remote)
+# is chosen only by firmware-test/device.yaml — CI derives the path from it, so
+# no specific TV is named here.
 env:
   FLIPPER_REF: d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d
-  FLIPPER_PATH: TVs/Sony/Sony_Bravia.ir
   IMAGE: esphome-ir-codegen:ci
 
 jobs:
@@ -27,12 +27,12 @@ jobs:
       - run: pytest -q
 
   firmware:
-    name: Sony Bravia → firmware (real Docker)
+    name: Sony Bravia → firmware (live Docker service)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # 1. Build the codegen image (the real Docker image the add-on ships).
+      # 1. Build the codegen image (the real image the add-on ships).
       - uses: docker/setup-buildx-action@v3
       - name: Build codegen image
         uses: docker/build-push-action@v6
@@ -43,19 +43,36 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 2. Run the image to generate the Sony Bravia component from the pinned ref.
-      - name: Generate Sony Bravia IR component
+      # 2. The device YAML is the only place a remote is named. Derive the
+      #    Flipper .ir path from its `packages: files:` entry (.yaml -> .ir).
+      - name: Resolve target .ir from the device YAML
         run: |
-          mkdir -p firmware-test/generated
-          docker run --rm "$IMAGE" \
-            --ref "$FLIPPER_REF" --path "$FLIPPER_PATH" \
-            --tx ir_tx --prefix "Bravia" \
-            | tee firmware-test/generated/sony_bravia.yaml
-          test -s firmware-test/generated/sony_bravia.yaml
-          # Fail if nothing was generated (e.g. all protocols unsupported).
-          grep -q "platform: template" firmware-test/generated/sony_bravia.yaml
+          OUT=$(grep -oP 'files:\s*\[\s*\K[^],\s]+' firmware-test/device.yaml | head -1)
+          if [ -z "$OUT" ]; then echo "no packages files: entry found"; exit 1; fi
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          echo "IR_PATH=${OUT%.yaml}.ir" >> "$GITHUB_ENV"
+          echo "device wants $OUT  <-  ${OUT%.yaml}.ir"
 
-      # 3. Compile real firmware that includes the generated component.
+      # 3. Start the codegen as a LIVE git service on localhost — no artifacts,
+      #    no device named here; it serves exactly what the device asked for.
+      - name: Start codegen service (git daemon)
+        run: |
+          docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" \
+            --serve --ref "$FLIPPER_REF" --path "$IR_PATH" --out "$OUT"
+          ok=
+          for _ in $(seq 1 30); do
+            if git ls-remote git://localhost:9418/irdb.git >/dev/null 2>&1; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "codegen service did not come up"; docker logs ir-codegen; exit 1
+          fi
+          echo "service is up:"; git ls-remote git://localhost:9418/irdb.git
+
+      # 4. Compile firmware — ESPHome clones the component from the running
+      #    container via `packages: url: git://localhost:9418/irdb.git`.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -65,8 +82,12 @@ jobs:
           path: ~/.platformio
           key: pio-${{ runner.os }}-esp32
       - run: pip install esphome
-      - name: Compile firmware (esphome)
+      - name: Compile firmware (ESPHome pulls from the live service)
         run: esphome compile firmware-test/device.yaml
+
+      - name: Stop codegen service
+        if: always()
+        run: docker rm -f ir-codegen || true
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4

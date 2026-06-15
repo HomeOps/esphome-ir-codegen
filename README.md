@@ -4,10 +4,56 @@ Turn a [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) `.ir` file into 
 ready-to-use ESPHome `remote_transmitter` component **on demand**, by referencing
 it from your ESPHome YAML as if it were a remote package source.
 
-> **Status:** working transformer, Dockerized, with an **end-to-end CI test that
-> builds real firmware from a real Flipper file** (see
-> [CI](#ci-the-sony-bravia-end-to-end-test)). The HA add-on serving layer is the
-> next step — see [Roadmap](#roadmap).
+> **Status:** working transformer + Dockerized **git service**. An end-to-end CI
+> test stands up the container and has **ESPHome clone the component from it** to
+> build real firmware (see [CI](#ci-the-sony-bravia-end-to-end-test)). Next:
+> HTTP/ingress serving + HA add-on packaging — see [Roadmap](#roadmap).
+
+## Showcase: a ~$20 universal remote
+
+Press the button on a **$20
+[M5 Atom Lite](https://shop.m5stack.com/products/atom-lite-esp32-development-kit)**
+and your TV toggles. The IR codes are never hand-typed — they're pulled, at build
+time, straight from the open
+[Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) by the codegen service.
+
+This is the exact device that CI compiles on every PR
+([`firmware-test/device.yaml`](firmware-test/device.yaml)):
+
+```yaml
+esp32:
+  board: m5stack-atom              # M5 Atom Lite
+
+remote_transmitter:
+  id: ir_tx
+  pin: GPIO12                      # the Atom's built-in IR LED
+
+packages:                          # <- codes pulled LIVE from the codegen service
+  sony_bravia:
+    url: git://localhost:9418/irdb.git
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.yaml]   # mirrors TVs/Sony/Sony_Bravia.ir
+
+binary_sensor:
+  - platform: gpio
+    pin: { number: GPIO39, inverted: true, mode: { input: true } }
+    on_press:
+      - button.press: power          # Sony "Power" toggle, pulled from the DB
+```
+
+The point: **there are no IR codes in your config** — just a reference to a device
+in a community database. The `files:` path *is* the selector:
+`TVs/Sony/Sony_Bravia.yaml` is generated on the fly from `TVs/Sony/Sony_Bravia.ir`.
+Swap it for any of the thousands of remotes in Flipper-IRDB and reflash — that one
+line is the only place a specific remote is named.
+
+### Why this matters
+
+Logitech Harmony is discontinued; SofaBaton and similar universal remotes are
+closed, cloud-tied, and cost real money. The goal here is a **fully open, local,
+DIY Harmony-style universal remote** on commodity ESP hardware — codes sourced
+from an open database, no vendor lock-in, for roughly the price of a sandwich. If
+it lands, it's an order-of-magnitude cheaper, fully hackable alternative.
 
 ## Credits / prior art
 
@@ -64,16 +110,38 @@ firmware (not on the device), so switching remotes means regenerate + reflash.
 
 ### Try it (Docker)
 
+Quick peek — CLI prints the YAML:
+
 ```bash
 docker build -t esphome-ir-codegen .
 docker run --rm esphome-ir-codegen \
   --ref d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d \
-  --path TVs/Sony/Sony_Bravia.ir \
-  --tx ir_tx --prefix "Bravia"
+  --path TVs/Sony/Sony_Bravia.ir --tx ir_tx --prefix "Bravia"
 ```
 
-It prints ESPHome YAML to stdout — redirect it into a file your device config
-`!include`s.
+Real usage — run it as a **service** and let ESPHome pull from it (no files on
+disk):
+
+```bash
+docker run -d -p 9418:9418 esphome-ir-codegen \
+  --serve --ref d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d \
+  --path TVs/Sony/Sony_Bravia.ir --out TVs/Sony/Sony_Bravia.yaml
+```
+
+```yaml
+# in your ESPHome device config — clones from the running container:
+packages:
+  sony_bravia:
+    url: git://localhost:9418/irdb.git
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.yaml]   # mirrors …/Sony_Bravia.ir
+    refresh: 0s
+```
+
+**How the `.ir` is resolved:** the served `.yaml` path *mirrors* the Flipper-IRDB
+path — `TVs/Sony/Sony_Bravia.yaml` ⇄ `TVs/Sony/Sony_Bravia.ir`. So the `files:`
+entry both names the output and selects the source. The service is generic (it's
+told only the pinned Flipper *ref*); the device config decides the *remote*.
 
 ## Design (locked decisions)
 
@@ -101,20 +169,20 @@ per signal, each calling `remote_transmitter.transmit_*`.
 `packages:` / `external_components:` are git-based, so the add-on presents itself
 as a repo:
 
-| Stage | Mechanism | Effort |
+| Stage | Mechanism | Status |
 |-------|-----------|--------|
-| **MVP** | REST endpoint (`GET /gen?ref=…&path=…&tx=…&prefix=…`) → returns YAML; `!include` or write into `/config/esphome/`. | low |
-| **v2 (the vision)** | Back it with a **real local bare-git repo** in a shared volume; the add-on commits generated YAML, ESPHome clones via `packages: url: file:///share/irdb-cache.git`. "Feels like a repo," no git-protocol code. | medium |
-| **v3** | Full **smart-HTTP git backend** that generates YAML at clone time. | high |
+| **Now** | `--serve` runs `git daemon`; ESPHome pulls via `packages: url: git://host:9418/irdb.git`. Exercised end-to-end in CI. | ✅ |
+| Next | HTTP(S) / smart-HTTP serving so it works through reverse proxies and HA ingress. | ⏳ |
+| Later | On-demand generation per clone (vs. baked once at container start). | ⏳ |
 
-Target ESPHome usage (v2):
+ESPHome usage today:
 
 ```yaml
 packages:
   tv_codes:
-    url: http://<addon>:8099/irdb.git    # the add-on, posing as a repo
+    url: git://<addon-host>:9418/irdb.git       # the add-on, posing as a repo
     ref: main
-    files: [Samsung_TV.yaml]             # <- generated from Samsung_TV.ir
+    files: [TVs/Sony/Sony_Bravia.yaml]          # <- mirrors TVs/Sony/Sony_Bravia.ir
     refresh: 0s
 ```
 
@@ -144,23 +212,26 @@ python flipper_ir_to_esphome.py --file Samsung_TV.ir --prefix TV
 
 ## CI: the Sony Bravia end-to-end test
 
-Every push and PR runs the real thing (`.github/workflows/ci.yaml`):
+Every push and PR runs the real thing (`.github/workflows/ci.yaml`), exercising
+the add-on **as a live service** — not a pre-generated file:
 
 1. **Build** the codegen Docker image.
-2. **Run** it to generate the **Sony Bravia** component from a pinned
-   Flipper-IRDB ref.
-3. **Compile** real ESP32 firmware (`firmware-test/device.yaml`) that `!include`s
-   the generated component, using ESPHome.
+2. **Start** it as a running container serving `git://localhost:9418/irdb.git`
+   (the Sony Bravia component, from a pinned Flipper-IRDB ref).
+3. **Compile** real ESP32 firmware (`firmware-test/device.yaml`) whose
+   `packages:` block **clones the component from that running container**. There
+   are no generated files on disk — ESPHome pulls from the service.
 4. **Upload** the resulting `firmware.bin` as a build artifact.
 
-If the generated YAML were malformed, step 3 fails — so a green build means the
-Sony Bravia codes produce **valid firmware**. (Validity ≠ correctness: that the
-codes are the *right* ones for your TV is verified separately against a live
+If the served YAML were malformed, step 3 fails — so a green build means the live
+service produces **valid firmware**. (Validity ≠ correctness: that the codes are
+the *right* ones for your TV is verified separately against a live
 `remote_receiver` capture.) This Sony Bravia run is the regression test guarding
 every future PR.
 
-Releases use [release-please](https://github.com/googleapis/release-please);
-a tagged release publishes the image to GHCR (`.github/workflows/publish.yaml`).
+Releases use [release-please](https://github.com/googleapis/release-please)
+(changelog in [`CHANGES.md`](CHANGES.md)); a tagged release publishes the image
+to GHCR (`.github/workflows/publish.yaml`).
 
 ## Roadmap
 

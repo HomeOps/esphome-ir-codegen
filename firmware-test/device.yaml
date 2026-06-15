@@ -1,22 +1,44 @@
-# Minimal firmware that includes a generated IR code set — the CI compile target.
-# `generated/sony_bravia.yaml` is produced at build time by running the codegen
-# Docker image; it is NOT committed (see .gitignore). Compiling this proves the
-# generated YAML is valid ESPHome.
+# CI compile target — an M5 Atom Lite whose front button toggles a Sony Bravia.
+#
+# The Sony Bravia buttons are pulled from a RUNNING codegen Docker container over
+# git:// (no local artifacts) — ESPHome clones the component at compile time from
+# the service the CI started. The pulled component defines one button per remote
+# key. The served file path mirrors the Flipper path: files: [TVs/Sony/Sony_Bravia.yaml]
+# selects TVs/Sony/Sony_Bravia.ir from Flipper-IRDB. This is the ONLY place a
+# specific remote is named. The "Power" key becomes `id: power`.
 esphome:
   name: ir-codegen-test
 
 esp32:
-  board: esp32dev
+  board: m5stack-atom        # M5 Atom Lite (ESP32-PICO)
   framework:
     type: arduino
 
 logger:
 
-# One transmitter; the generated buttons target it via transmitter_id: ir_tx.
+# The Atom Lite's built-in IR LED.
 remote_transmitter:
   id: ir_tx
-  pin: GPIO12          # e.g. M5 Atom's built-in IR LED
+  pin: GPIO12
   carrier_duty_percent: 50%
 
+# Pull the Sony Bravia component straight from the live codegen Docker service.
 packages:
-  sony_bravia: !include generated/sony_bravia.yaml
+  sony_bravia:
+    url: git://localhost:9418/irdb.git           # the running codegen container
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.yaml]           # mirrors TVs/Sony/Sony_Bravia.ir
+    refresh: 0s
+
+# The Atom's front "clicker" button (G39) sends the Sony power toggle by pressing
+# the generated `bravia_power` button (which transmits via the IR LED above).
+binary_sensor:
+  - platform: gpio
+    name: "Atom Button"
+    pin:
+      number: GPIO39        # input-only; board has an external pull-up
+      inverted: true
+      mode:
+        input: true
+    on_press:
+      - button.press: power

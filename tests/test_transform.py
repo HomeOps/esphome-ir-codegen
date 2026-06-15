@@ -1,6 +1,6 @@
 """Unit tests for the Flipper .ir -> ESPHome transformer."""
 
-from flipper_ir_to_esphome import emit_nec, emit_raw, emit_sony, parse_ir
+from flipper_ir_to_esphome import emit_nec, emit_raw, emit_sony, generate, parse_ir
 
 
 def test_parse_splits_on_hash():
@@ -36,3 +36,15 @@ def test_raw_alternates_sign():
     assert action == "transmit_raw"
     assert args["carrier_frequency"] == 38000
     assert args["code"] == [100, -200, 300, -400]
+
+
+def test_generate_emits_stable_button_id():
+    # The Atom-button showcase presses `power` — that id must be stable.
+    entries = [{
+        "name": "Power", "type": "parsed", "protocol": "SIRC",
+        "address": "01 00 00 00", "command": "15 00 00 00",
+    }]
+    out = generate(entries, "ref", "src", None, "")
+    assert "id: power" in out
+    assert 'name: "Power"' in out
+    assert "transmit_sony" in out

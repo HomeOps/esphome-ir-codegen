@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Flipper .ir -> ESPHome remote_transmitter YAML (prototype).
+"""Flipper .ir -> ESPHome remote_transmitter YAML.
 
-The transformation core for the planned Home Assistant add-on: given a *pinned
-Flipper-IRDB git ref* and a path within that repo, fetch the `.ir` file and emit
-ESPHome `button` entities, one per IR signal.
+Two modes:
+  * one-shot CLI : print the generated ESPHome YAML for a Flipper file.
+  * --serve      : run a tiny **git service** — generate the component, commit it
+                   into a bare repo, and serve it over the git:// protocol so an
+                   ESPHome build pulls it with `packages: url: git://host/irdb.git`.
+                   This is the add-on "posing as a repo": ESPHome clones from the
+                   live container at compile time.
+
+Given a *pinned Flipper-IRDB git ref* + a path, fetch the `.ir` file and emit one
+ESPHome `button` per IR signal.
 
 Design decisions (locked):
   * Reproducibility comes from the Flipper ref itself (--ref), not a local copy.
@@ -22,6 +29,7 @@ the *correct* one for your device.
 """
 
 import argparse
+import os
 import sys
 import urllib.request
 
@@ -100,6 +108,17 @@ def _button_name(prefix, name):
     return f"{prefix} {name}".strip() if prefix else name
 
 
+def _slug(text):
+    """Stable, valid ESPHome id from a name ('Bravia Power' -> bravia_power)."""
+    s = "".join(c if c.isalnum() else "_" for c in text.lower())
+    while "__" in s:
+        s = s.replace("__", "_")
+    s = s.strip("_")
+    if not s or not s[0].isalpha():
+        s = "ir_" + s
+    return s
+
+
 def generate(entries, ref, src, tx_id, prefix):
     out = [
         f"# Generated from {FLIPPER_REPO}@{ref}",
@@ -127,8 +146,10 @@ def generate(entries, ref, src, tx_id, prefix):
             skipped.append((name, f"{proto or typ} (parse error)"))
             continue
 
+        bname = _button_name(prefix, name)
         out.append("  - platform: template")
-        out.append(f'    name: "{_button_name(prefix, name)}"')
+        out.append(f"    id: {_slug(bname)}")
+        out.append(f'    name: "{bname}"')
         out.append("    on_press:")
         out.append(f"      - remote_transmitter.{action}:")
         if tx_id:
@@ -149,17 +170,81 @@ def generate(entries, ref, src, tx_id, prefix):
     return "\n".join(out) + "\n"
 
 
+def serve(port=9418, ref="main", path=None, out="component.yaml", tx_id=None, prefix=""):
+    """Generate the component, bake it into a bare git repo, and serve git://.
+
+    An ESPHome build pulls it with:
+
+        packages:
+          x:
+            url: "git://<host>:<port>/irdb.git"
+            ref: main
+            files: ["<out>"]
+
+    The container listens for git clone requests — this is the add-on serving
+    layer, exercised for real (no pre-generated files on disk in the consumer).
+    """
+    import subprocess
+    import tempfile
+
+    if not path:
+        raise SystemExit("--serve requires --path")
+
+    webroot = tempfile.mkdtemp(prefix="irdb-")
+    work = tempfile.mkdtemp(prefix="irdb-work-")
+    yaml = generate(parse_ir(fetch(ref, path)), ref, path, tx_id, prefix)
+    out_path = os.path.join(work, out)
+    os.makedirs(os.path.dirname(out_path) or work, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        handle.write(yaml)
+
+    def git(*args, cwd):
+        subprocess.run(
+            ["git", *args], cwd=cwd, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    git("init", "-q", "-b", "main", cwd=work)
+    git("config", "user.email", "codegen@local", cwd=work)
+    git("config", "user.name", "ir-codegen", cwd=work)
+    git("add", "-A", cwd=work)
+    git("commit", "-q", "-m", f"generated {out}", cwd=work)
+    bare = os.path.join(webroot, "irdb.git")
+    subprocess.run(
+        ["git", "clone", "-q", "--bare", work, bare], check=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    print(f"git daemon: git://0.0.0.0:{port}/irdb.git  (ref main, file {out})", flush=True)
+    os.execvp("git", [
+        "git", "daemon", "--reuseaddr", "--export-all", "--verbose",
+        f"--base-path={webroot}", f"--port={port}", "--listen=0.0.0.0", webroot,
+    ])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--file", help="local .ir file")
-    source.add_argument("--path", help="path within the Flipper-IRDB repo")
+    parser.add_argument("--serve", action="store_true", help="run a git:// service ESPHome can pull from")
+    parser.add_argument("--port", type=int, default=9418, help="git daemon port for --serve")
+    parser.add_argument("--out", help="component filename served by --serve (default: derived from --path)")
+    parser.add_argument("--file", help="local .ir file")
+    parser.add_argument("--path", help="path within the Flipper-IRDB repo")
     parser.add_argument("--ref", default="main", help="Flipper-IRDB git ref — pin for reproducibility")
     parser.add_argument("--tx", dest="tx_id", help="remote_transmitter id (omit if you only have one)")
     parser.add_argument("--prefix", default="", help='button name prefix, e.g. "TV"')
     args = parser.parse_args(argv)
+
+    if args.serve:
+        if not args.path:
+            parser.error("--serve requires --path")
+        out = args.out or (os.path.splitext(os.path.basename(args.path))[0].lower() + ".yaml")
+        serve(port=args.port, ref=args.ref, path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
+        return 0
+
+    if not args.file and not args.path:
+        parser.error("one of --file / --path is required (or use --serve)")
 
     if args.file:
         with open(args.file, encoding="utf-8") as handle:
