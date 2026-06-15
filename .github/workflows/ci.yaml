@@ -26,7 +26,7 @@ jobs:
       - run: pytest -q
 
   firmware:
-    name: Sony Bravia → firmware (path-less Docker service)
+    name: Sony Bravia → firmware (whole-DB Docker service)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,9 +59,8 @@ jobs:
           fi
           echo "service is up"; docker logs ir-codegen | tail -3
 
-      # ESPHome clones http://localhost:9418/TVs/Sony/Sony_Bravia.git — the URL
-      # path is the only place the remote is named; the component is generated
-      # on demand.
+      # ESPHome clones http://localhost:9418/default.git and selects the remote
+      # via files: [TVs/Sony/Sony_Bravia.yaml] — the only place a remote is named.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -71,7 +70,7 @@ jobs:
           path: ~/.platformio
           key: pio-${{ runner.os }}-esp32
       - run: pip install esphome
-      - name: Compile firmware (pulls per-path from the live service)
+      - name: Compile firmware (pulls from default.git on the live service)
         run: esphome compile firmware-test/device.yaml
 
       - name: Capture the Sony Bravia component (the useful artifact)
