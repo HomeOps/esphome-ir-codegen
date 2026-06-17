@@ -87,11 +87,12 @@ jobs:
         run: |
           esphome config firmware-test/device-multi.yaml | tee _multi.txt
           # Device names only appear in the merged esphome.devices block (buttons
-          # are named "Power"), so matching both proves the lists concatenated.
+          # are named "Power"), so matching both proves the lists concatenated —
+          # and that two same-brand models keep distinct ids via the model word.
           grep -q "name: Sony Bravia" _multi.txt
-          grep -q "name: Samsung AA59-00443A" _multi.txt
+          grep -q "name: Sony KD" _multi.txt
           grep -q "device_id: tv_sony_bravia" _multi.txt
-          grep -q "device_id: tv_samsung_aa59_00443a" _multi.txt
+          grep -q "device_id: tv_sony_kd" _multi.txt
           echo "both sub-devices present and referenced after package merge"
 
       - name: Capture the generated components (the useful artifacts)

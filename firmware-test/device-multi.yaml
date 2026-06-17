@@ -22,14 +22,16 @@ remote_transmitter:
   non_blocking: true
 
 packages:
-  # Two remotes from the same on-demand source repo — two sub-devices after merge:
-  #   Sony_Bravia   -> device tv_sony_bravia
-  #   Samsung TV    -> device tv_samsung_aa59_00443a
+  # Two Sony models from one on-demand source repo — two sub-devices after merge.
+  # Same brand, distinct models: the model word is what keeps their ids from
+  # colliding (both would otherwise be `tv_sony`).
+  #   Sony_Bravia -> device tv_sony_bravia
+  #   Sony_KD     -> device tv_sony_kd
   sony_bravia:
     url: http://localhost:9418/Lucaslhm/Flipper-IRDB.git
     ref: main
     files: [TVs/Sony/Sony_Bravia.yaml]
-  samsung_tv:
+  sony_kd:
     url: http://localhost:9418/Lucaslhm/Flipper-IRDB.git
     ref: main
-    files: [TVs/Samsung/Samsung_AA59-00443A.yaml]
+    files: [TVs/Sony/Sony_KD.yaml]
