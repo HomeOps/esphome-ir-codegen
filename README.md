@@ -46,7 +46,7 @@ binary_sensor:
   - platform: gpio
     pin: { number: GPIO39, inverted: true, mode: { input: true } }
     on_press:
-      - button.press: tv_sony_power  # Sony "Power" toggle, pulled from the DB
+      - button.press: tv_sony_bravia_power  # Sony "Power" toggle, pulled from the DB
 ```
 
 The point: **there are no IR codes in your config** — just a reference to a device
@@ -203,9 +203,9 @@ and the on-demand `<owner>/<name>.git` repos all share one encoder.
 3. **Live-service dependency is acceptable.** ESPHome clones from the add-on at
    compile time; if it's down, the build fails. The device's `ref:` selects the
    codes, so a green build is reproducible.
-4. **Button ids are namespaced by path.** `<category>_<brand>_<key>` (e.g.
-   `tv_sony_power`), so buttons from different remotes never collide; dedup /
-   button-explosion curation is still deferred.
+4. **Button ids are namespaced by path.** `<category>_<brand>[_<model>]_<key>`
+   (e.g. `tv_sony_bravia_power`, `kvm_generic_power`), so buttons from different
+   remotes never collide; dedup / button-explosion curation is still deferred.
 
 ## Architecture
 

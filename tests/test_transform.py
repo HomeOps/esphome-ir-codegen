@@ -124,10 +124,11 @@ def test_repo_from_path_and_validation():
 
 
 def test_id_prefix_from_path():
-    # Button ids are namespaced by '<category>_<brand>' derived from the path:
-    # the category drops its trailing 's', the brand keeps only the first token.
-    assert _id_prefix("KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir") == "kvm_generic"
-    assert _id_prefix("TVs/Sony/Sony_Bravia.ir") == "tv_sony"
+    # Button ids are namespaced by '<category>_<brand>[_<model>]' from the path:
+    # the category drops its trailing 's', the brand is the filename's first token.
+    assert _id_prefix("KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir") == "kvm_generic"   # model dropped
+    assert _id_prefix("TVs/Sony/Sony_Bravia.ir") == "tv_sony_bravia"   # brand folder repeated -> keep model
+    assert _id_prefix("TVs/LG/LG_AKB.ir") == "tv_lg_akb"
     assert _id_prefix("vizio/tv") == "vizio_tv"          # ha-ir layout
     assert _id_prefix("Samsung_TV.ir") == "samsung"      # single segment -> brand only
     assert _id_prefix("") == "ir"                        # fallback keeps a leading letter
@@ -141,13 +142,13 @@ def test_slug_uses_prefix_and_dodges_reserved_words():
 
 def test_generate_emits_stable_button_id():
     # The Atom-button showcase presses the Sony power button — its id is the
-    # path-namespaced `tv_sony_power` and must be stable.
+    # path-namespaced `tv_sony_bravia_power` and must be stable.
     entries = [{
         "name": "Power", "type": "parsed", "protocol": "SIRC",
         "address": "01 00 00 00", "command": "15 00 00 00",
     }]
     out = generate(entries, "ref", "TVs/Sony/Sony_Bravia.ir", None, "")
-    assert "id: tv_sony_power" in out
+    assert "id: tv_sony_bravia_power" in out
     assert 'name: "Power"' in out
     assert "transmit_raw" in out
     assert "# TODO unsupported" not in out

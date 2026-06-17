@@ -172,26 +172,33 @@ def _sanitize(text):
 
 
 def _id_prefix(path):
-    """Derive a button-id prefix '<category>_<brand>' from a code-set path.
+    """Derive a button-id prefix '<category>_<brand>[_<model>]' from a path.
 
-    'KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir' -> 'kvm_generic'
-    'TVs/Sony/Sony_Bravia.ir'              -> 'tv_sony'
-    'vizio/tv'                             -> 'vizio_tv'  (ha-ir layout)
+    'KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir' -> 'kvm_generic'        (model dropped)
+    'TVs/Sony/Sony_Bravia.ir'              -> 'tv_sony_bravia'     (model kept)
+    'vizio/tv'                             -> 'vizio_tv'           (ha-ir layout)
 
     The category (first path segment) is singularized by dropping a trailing
-    's'; the brand is the first underscore-token of the filename (the model id
-    after it is dropped). A single-segment path contributes only the brand.
-    Falls back to 'ir' when nothing usable remains, preserving the old
-    leading-letter id guarantee.
+    's'; the brand is the first underscore-token of the filename. Flipper's
+    Category/Brand/Brand_Model layout repeats the brand in the file name, so when
+    the filename's leading token matches the parent (brand) folder, the next word
+    (the model) is kept — otherwise distinct models would collapse to one prefix.
+    A single-segment path contributes only the brand; falls back to 'ir' when
+    nothing usable remains, preserving the old leading-letter id guarantee.
     """
     parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
     if not parts:
         return "ir"
-    brand = os.path.splitext(parts[-1])[0].split("_")[0]
+    tokens = [t for t in os.path.splitext(parts[-1])[0].split("_") if t]
+    brand = tokens[0] if tokens else ""
     category = parts[0] if len(parts) >= 2 else ""
     if category.lower().endswith("s") and len(category) > 1:
         category = category[:-1]
-    prefix = _sanitize("_".join(p for p in (category, brand) if p))
+    pieces = [category, brand]
+    parent = parts[-2] if len(parts) >= 2 else ""
+    if parent and brand and parent.lower() == brand.lower() and len(tokens) > 1:
+        pieces.append(tokens[1])   # brand repeated in the file name -> keep the model
+    prefix = _sanitize("_".join(p for p in pieces if p))
     return prefix or "ir"
 
 

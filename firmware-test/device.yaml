@@ -26,7 +26,7 @@ remote_transmitter:
 
 # `files:` selects the remote by its Flipper-IRDB path with a .yaml extension
 # (ESPHome only accepts .yaml/.yml). That file holds the generated component
-# (button ids are namespaced by path, e.g. id: tv_sony_power). One repo, cloned
+# (button ids are namespaced by path, e.g. id: tv_sony_bravia_power). One repo, cloned
 # once and shared across devices.
 packages:
   sony_bravia:
@@ -35,7 +35,7 @@ packages:
     files: [TVs/Sony/Sony_Bravia.yaml]   # refresh defaults to 1d — never set 0s
 
 # The Atom's front "clicker" button (G39) sends the Sony power toggle by pressing
-# the generated `tv_sony_power` button (which transmits via the IR LED above).
+# the generated `tv_sony_bravia_power` button (which transmits via the IR LED above).
 binary_sensor:
   - platform: gpio
     name: "Atom Button"
@@ -45,4 +45,4 @@ binary_sensor:
       mode:
         input: true
     on_press:
-      - button.press: tv_sony_power
+      - button.press: tv_sony_bravia_power

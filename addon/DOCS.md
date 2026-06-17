@@ -40,7 +40,7 @@ packages:
 hash-prefixed slug in the add-on page URL) or your HA host's IP. The `url:` path
 is the Flipper source repo (point it at any fork) and `ref:` is any branch/tag
 (pin an unmerged PR branch freely); the reserved `…/ha-ir.git` serves the curated
-HA code sets. Reference the generated buttons, e.g. `button.press: tv_sony_power`
+HA code sets. Reference the generated buttons, e.g. `button.press: tv_sony_bravia_power`
 — ids are namespaced by the code-set path (see [Button ids](#button-ids)). Swap
 the `files:` path for any remote in the repo.
 
@@ -94,20 +94,21 @@ binary_sensor:
       inverted: true
       mode: { input: true }
     on_press:
-      - button.press: tv_sony_power
+      - button.press: tv_sony_bravia_power
 ```
 
 ## Button ids
 
 Generated button ids are **namespaced by the code-set path** so buttons from
 different remotes never collide when you include more than one package:
-`<category>_<brand>_<key>`. The category (first path segment) drops its trailing
-`s`; the brand is the first token of the filename (the model id after it is
-dropped):
+`<category>_<brand>[_<model>]_<key>`. The category (first path segment) drops its
+trailing `s`; the brand is the filename's first token. When the file sits in a
+brand folder that repeats the brand (Flipper's `Category/Brand/Brand_Model`
+layout), the model word is kept so distinct models stay distinct:
 
 | `files:` path | Button (key `Power`) |
 |---------------|----------------------|
-| `TVs/Sony/Sony_Bravia.yaml` | `tv_sony_power` |
+| `TVs/Sony/Sony_Bravia.yaml` | `tv_sony_bravia_power` |
 | `KVMs/Generic_8K_HDMI_DP_4Port_KVM.yaml` | `kvm_generic_power` |
 | `vizio/tv.yaml` (ha-ir) | `vizio_tv_power` |
 
