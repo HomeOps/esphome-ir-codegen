@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.2.1...v0.3.0) (2026-06-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* per-device repo+ref built on demand; path-namespaced button ids ([#19](https://github.com/HomeOps/esphome-ir-codegen/issues/19))
+
+### Features
+
+* per-device repo+ref built on demand; path-namespaced button ids ([#19](https://github.com/HomeOps/esphome-ir-codegen/issues/19)) ([2036311](https://github.com/HomeOps/esphome-ir-codegen/commit/2036311e3c9f4aa377f576123c818f2a58793061))
+
 ## [0.2.1](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.2.0...v0.2.1) (2026-06-15)
 
 
