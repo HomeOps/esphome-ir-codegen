@@ -1,8 +1,7 @@
 # Runtime dependencies for the codegen.
 #
 # homeops-ir-adapter parses IR sources (Flipper .ir, HA code sets) into Signals
-# (timings + protocol), pulling infrared-protocols transitively. Requires 3.14.
-# homeops-ir-canonical resolves a button name to a canonical control id, applied
-# at YAML-generation time so the same control gets the same id across remotes.
-homeops-ir-adapter>=0.1.0
-homeops-ir-canonical>=0.1.0
+# (timings + protocol) that already carry their canonical control id — it pulls
+# homeops-ir-canonical and infrared-protocols transitively. This service only
+# renders YAML + serves git. Requires Python 3.14.
+homeops-ir-adapter>=0.1.1

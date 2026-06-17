@@ -12,6 +12,7 @@ from flipper_ir_to_esphome import (
     _key,
     _mirror_out,
     _repo_from_path,
+    _sanitize,
     _v2_command,
     _valid_repo,
     _wanted_refs,
@@ -20,13 +21,17 @@ from flipper_ir_to_esphome import (
 
 
 class Sig:
-    """Minimal stand-in for ir_adapter.Signal (render only reads these fields)."""
+    """Minimal stand-in for ir_adapter.Signal (render only reads these fields).
 
-    def __init__(self, name, carrier_hz=38000, timings=(100, -200), repeat=1):
+    `canonical` is what homeops-ir-adapter resolves the name to (None if unmapped).
+    """
+
+    def __init__(self, name, carrier_hz=38000, timings=(100, -200), repeat=1, canonical=None):
         self.name = name
         self.carrier_hz = carrier_hz
         self.timings = timings
         self.repeat = repeat
+        self.canonical = canonical
 
 
 def _pkt(payload):
@@ -95,15 +100,15 @@ def test_device_name_drops_category_keeps_case():
 
 # --- canonical key + render ----------------------------------------------------
 
-def test_key_resolves_canonical_else_slug():
-    assert _key("Power") == "power_toggle"
-    assert _key("VOL+") == "volume_up"
-    assert _key("Vol_up") == "volume_up"
-    assert _key("Custom Thing") == "custom_thing"     # unmapped -> sanitized slug
+def test_key_uses_signal_canonical_else_slug():
+    assert _key(Sig("Power", canonical="power_toggle")) == "power_toggle"
+    assert _key(Sig("Custom Thing", canonical=None)) == "custom_thing"   # unmapped -> slug
+    assert _key(Sig("", canonical=None)) == "unnamed"
+    assert _sanitize("Custom Thing") == "custom_thing"
 
 
 def test_render_uses_canonical_ids_and_subdevice():
-    out = render([Sig("Power", 40000, (2400, -600), repeat=3)],
+    out = render([Sig("Power", 40000, (2400, -600), repeat=3, canonical="power_toggle")],
                  "TVs/Sony/Sony_Bravia.ir", "Lucaslhm/Flipper-IRDB@main")
     assert 'esphome:\n  devices:\n    - id: tv_sony_bravia\n      name: "Sony Bravia"\n' in out
     assert "id: tv_sony_bravia_power_toggle" in out
@@ -113,20 +118,22 @@ def test_render_uses_canonical_ids_and_subdevice():
 
 
 def test_render_dedupes_same_canonical_first_wins():
-    out = render([Sig("Vol_up"), Sig("VOLUME_UP")], "TVs/Sony/Sony_Bravia.ir", "x")
+    out = render([Sig("Vol_up", canonical="volume_up"), Sig("VOLUME_UP", canonical="volume_up")],
+                 "TVs/Sony/Sony_Bravia.ir", "x")
     assert out.count("id: tv_sony_bravia_volume_up") == 1
 
 
 def test_render_raw_has_no_repeat_but_parsed_does():
     raw = render([Sig("Custom", 38000, (100, -200), repeat=1)], "TVs/Sony/Sony_Bravia.ir", "x")
     assert "repeat:" not in raw
-    parsed = render([Sig("Power", 40000, (2400, -600), repeat=3)], "TVs/Sony/Sony_Bravia.ir", "x")
+    parsed = render([Sig("Power", 40000, (2400, -600), repeat=3, canonical="power_toggle")],
+                    "TVs/Sony/Sony_Bravia.ir", "x")
     assert "repeat:" in parsed and "times: 3" in parsed
 
 
 def test_render_each_component_gets_distinct_subdevice():
-    sony = render([Sig("Power")], "TVs/Sony/Sony_Bravia.ir", "x")
-    samsung = render([Sig("Power")], "TVs/Samsung/Samsung_QLED.ir", "x")
+    sony = render([Sig("Power", canonical="power_toggle")], "TVs/Sony/Sony_Bravia.ir", "x")
+    samsung = render([Sig("Power", canonical="power_toggle")], "TVs/Samsung/Samsung_QLED.ir", "x")
     assert 'id: tv_sony_bravia\n      name: "Sony Bravia"' in sony
     assert 'id: tv_samsung_qled\n      name: "Samsung QLED"' in samsung
     assert _id_prefix("TVs/Sony/Sony_Bravia.ir") != _id_prefix("TVs/Samsung/Samsung_QLED.ir")

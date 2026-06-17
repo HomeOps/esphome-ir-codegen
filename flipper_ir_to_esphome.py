@@ -26,14 +26,12 @@ Design decisions (locked):
   * `ha-ir.git` is a reserved, library-built repo; adding another reserved
     adapter is just one more prebuilt `<name>.git` under the cache dir.
 
-Libraries (this module only renders YAML + serves git):
-  * homeops-ir-adapter   -> parses each source (Flipper .ir, HA code sets) into
-                            Signals (raw timings + protocol); parsed protocols are
-                            encoded by infrared-protocols (NEC/NECext, SIRC/15/20,
-                            Samsung32, RC5/RC5X, Sharp). raw captures pass through.
-  * homeops-ir-canonical -> resolves each button's raw name to a canonical control
-                            id at generation time, so the same control (VOL+,
-                            Vol_up, VOLUME_UP) gets the same id on every remote.
+This module only renders YAML + serves git. It depends on **homeops-ir-adapter**,
+which parses each source (Flipper .ir, HA code sets) into Signals — raw timings +
+protocol (parsed protocols encoded by infrared-protocols: NEC/NECext, SIRC/15/20,
+Samsung32, RC5/RC5X, Sharp) AND each Signal's canonical control id (resolved by
+homeops-ir-canonical, pulled transitively). Button ids use that canonical id, so
+the same control (VOL+, Vol_up, VOLUME_UP) gets the same id on every remote.
 
 VERIFY generated parsed codes against a live `remote_receiver` capture before
 trusting them — compiling only proves the YAML is *valid*, not that the code is
@@ -46,9 +44,6 @@ import re
 import sys
 import threading
 import urllib.request
-
-from ir_canonical import canonical as _canonical
-from ir_canonical import resolve as _resolve
 
 FLIPPER_REPO = "Lucaslhm/Flipper-IRDB"
 RAW_BASE = "https://raw.githubusercontent.com"
@@ -133,15 +128,16 @@ def _device_name(path):
     return " ".join(name)
 
 
-def _key(name):
-    """The button-id key for a raw name: its canonical control id, else a slug.
+def _key(signal):
+    """The button-id key for a Signal: its canonical control id, else a slug.
 
-    Resolved at *generation* time via ir-canonical so the same control gets the
-    same id across remotes (VOL+, Vol_up, VOLUME_UP all -> volume_up). Unmapped
-    names keep a sanitized form; the path-derived prefix in render() guarantees a
-    leading letter, dodging ESPHome/C++ reserved words (return, switch, …).
+    The canonical id is resolved by homeops-ir-adapter at parse time (so the same
+    control gets the same id across remotes — VOL+, Vol_up, VOLUME_UP all become
+    volume_up); unmapped names fall back to a sanitized form. The path-derived
+    prefix in render() guarantees a leading letter, dodging ESPHome/C++ reserved
+    words (return, switch, …).
     """
-    return _resolve(name) or _canonical(name) or _sanitize(name) or "unnamed"
+    return signal.canonical or _sanitize(signal.name) or "unnamed"
 
 
 def _append_button(out, bid, bname, carrier, code, tx_id, repeat, device_id=None):
@@ -192,7 +188,7 @@ def render(signals, src, source, tx_id=None, prefix=""):
     ]
     seen = set()
     for sig in signals:
-        bid = f"{id_prefix}_{_key(sig.name)}"
+        bid = f"{id_prefix}_{_key(sig)}"
         if bid in seen:
             continue
         seen.add(bid)
