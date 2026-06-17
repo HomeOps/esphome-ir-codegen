@@ -6,10 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
-# CI pins the Flipper-IRDB commit for a deterministic build. The *add-on* never
-# sets a ref (it uses the source repo's default branch); only CI does, via --ref.
+# Source repo + ref are per-device: the device's url path picks the Flipper repo
+# and `ref:` picks the branch, built on demand. The firmware-test devices pin
+# Lucaslhm/Flipper-IRDB @ main (flipper) and the reserved ha-ir.git.
 env:
-  FLIPPER_REF: d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d
   IMAGE: esphome-ir-codegen:ci
 
 jobs:
@@ -41,17 +41,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Start the add-on exactly as Home Assistant would: just the source repo
-      # (default), no path/out. --ref only pins the flipper commit for stable CI.
-      # The service builds one repo per adapter: flipper.git + ha-ir.git.
+      # Start the add-on exactly as Home Assistant would: no repo/ref — both are
+      # per-device. The reserved ha-ir.git is prebuilt at startup; flipper repos
+      # build on demand. Warming `Lucaslhm/Flipper-IRDB @ main` here builds the
+      # whole DB (~9k) once so the compile steps clone a warm cache.
       - name: Start codegen service (path-less)
         run: |
-          docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" --serve --ref "$FLIPPER_REF"
+          docker run -d --name ir-codegen -p 9418:9418 "$IMAGE" --serve
           ok=
-          # First start generates the whole flipper DB (~9k) + ha-ir — give it time.
+          # ha-ir.git is prebuilt; ls-remote of the flipper ref triggers + waits
+          # on the on-demand build (a few minutes) before it returns.
           for _ in $(seq 1 180); do
-            if git ls-remote http://localhost:9418/flipper.git >/dev/null 2>&1 \
-               && git ls-remote http://localhost:9418/ha-ir.git >/dev/null 2>&1; then
+            if git ls-remote http://localhost:9418/ha-ir.git >/dev/null 2>&1 \
+               && git ls-remote http://localhost:9418/Lucaslhm/Flipper-IRDB.git main >/dev/null 2>&1; then
               ok=1; break
             fi
             sleep 2
@@ -80,7 +82,7 @@ jobs:
       - name: Capture the generated components (the useful artifacts)
         run: |
           rm -rf _generated _artifact; mkdir -p _artifact
-          git clone -q http://localhost:9418/flipper.git _generated/flipper
+          git clone -q -b main http://localhost:9418/Lucaslhm/Flipper-IRDB.git _generated/flipper
           git clone -q http://localhost:9418/ha-ir.git _generated/ha-ir
           cp "_generated/flipper/TVs/Sony/Sony_Bravia.yaml" "_artifact/flipper-Sony_Bravia.yaml"
           cp "_generated/ha-ir/vizio/tv.yaml" "_artifact/ha-ir-vizio-tv.yaml"

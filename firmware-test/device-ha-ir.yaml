@@ -3,7 +3,8 @@
 #
 # The ha-ir adapter (ha-ir.git) exposes infrared-protocols' curated code sets at
 # <brand>/<type>.yaml. ESPHome clones it and `files:` selects the code set; the
-# generated component defines id: ir_power, etc. — same shape as the flipper one.
+# generated component defines id: vizio_tv_power, etc. (button ids are namespaced
+# by path) — same shape as the flipper one.
 esphome:
   name: ir-codegen-ha-ir
 
@@ -37,4 +38,4 @@ binary_sensor:
       mode:
         input: true
     on_press:
-      - button.press: ir_power
+      - button.press: vizio_tv_power
