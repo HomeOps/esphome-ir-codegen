@@ -46,7 +46,7 @@ binary_sensor:
   - platform: gpio
     pin: { number: GPIO39, inverted: true, mode: { input: true } }
     on_press:
-      - button.press: tv_sony_bravia_power  # Sony "Power" toggle, pulled from the DB
+      - button.press: tv_sony_bravia_power_toggle  # Sony "Power" toggle, pulled from the DB
 ```
 
 The point: **there are no IR codes in your config** — just a reference to a device
@@ -203,9 +203,12 @@ and the on-demand `<owner>/<name>.git` repos all share one encoder.
 3. **Live-service dependency is acceptable.** ESPHome clones from the add-on at
    compile time; if it's down, the build fails. The device's `ref:` selects the
    codes, so a green build is reproducible.
-4. **Button ids are namespaced by path.** `<category>_<brand>[_<model>]_<key>`
-   (e.g. `tv_sony_bravia_power`, `kvm_generic_power`), so buttons from different
-   remotes never collide; dedup / button-explosion curation is still deferred.
+4. **Button ids are `<path-prefix>_<canonical>`.** A path-derived prefix
+   (`tv_sony_bravia`) namespaces remotes; the key is the raw name resolved to a
+   **canonical control** via `homeops-ir-canonical` at generation time, so the
+   same control is identically named on every remote (`VOL+`/`Vol_up`/`VOLUME_UP`
+   → `…_volume_up`). Parsing/encoding is `homeops-ir-adapter`; this service only
+   renders YAML + serves git.
 
 ## Architecture
 

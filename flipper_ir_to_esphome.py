@@ -26,18 +26,18 @@ Design decisions (locked):
   * `ha-ir.git` is a reserved, library-built repo; adding another reserved
     adapter is just one more prebuilt `<name>.git` under the cache dir.
 
-Protocol coverage:
-  * type: raw                            -> transmit_raw (direct passthrough)
-  * type: parsed (NEC/NECext, SIRC/15/20,
-    Samsung32, RC5/RC5X, Sharp)          -> transmit_raw, encoded by the
-                                            infrared-protocols library
-  * everything else                      -> `# TODO unsupported` comment
+Libraries (this module only renders YAML + serves git):
+  * homeops-ir-adapter   -> parses each source (Flipper .ir, HA code sets) into
+                            Signals (raw timings + protocol); parsed protocols are
+                            encoded by infrared-protocols (NEC/NECext, SIRC/15/20,
+                            Samsung32, RC5/RC5X, Sharp). raw captures pass through.
+  * homeops-ir-canonical -> resolves each button's raw name to a canonical control
+                            id at generation time, so the same control (VOL+,
+                            Vol_up, VOLUME_UP) gets the same id on every remote.
 
-We keep no protocol math of our own: parsed signals are encoded by the
-infrared-protocols library (NECCommand, SonyCommand, …) and emitted as the raw
-timings it returns. VERIFY generated parsed codes against a live
-`remote_receiver` capture before trusting them — compiling only proves the YAML
-is *valid*, not that the code is the *correct* one for your device.
+VERIFY generated parsed codes against a live `remote_receiver` capture before
+trusting them — compiling only proves the YAML is *valid*, not that the code is
+the *correct* one for your device.
 """
 
 import argparse
@@ -47,17 +47,15 @@ import sys
 import threading
 import urllib.request
 
+from ir_canonical import canonical as _canonical
+from ir_canonical import resolve as _resolve
+
 FLIPPER_REPO = "Lucaslhm/Flipper-IRDB"
 RAW_BASE = "https://raw.githubusercontent.com"
 
-# Flipper SIRC variants -> SonyCommand address width (command is always 7-bit).
-SONY_ADDRESS_BITS = {"SIRC": 5, "SIRC15": 8, "SIRC20": 13}
-
-# The library returns ONE frame per command (by design — repetition is the
-# transmit layer's job, exactly as HA's IR proxy repeats it). In the ESPHome
-# compile path *we* are that layer, so library-encoded signals are sent with a
-# repeat: Sony SIRC and several others need ~3 frames before a device acts.
-PARSED_REPEAT_TIMES = 3
+# Parsed protocols are single library frames (repetition is the transmit layer's
+# job, like HA's IR proxy); ESPHome repeats them. The repeat *count* comes from
+# each Signal (raw capture = 1, parsed = 3).
 PARSED_REPEAT_WAIT = "40ms"
 
 
@@ -66,97 +64,6 @@ def fetch(ref, path, repo=FLIPPER_REPO):
     url = f"{RAW_BASE}/{repo}/{ref}/{path.lstrip('/')}"
     with urllib.request.urlopen(url, timeout=15) as resp:
         return resp.read().decode("utf-8")
-
-
-def parse_ir(text):
-    """Parse a Flipper .ir file into a list of signal dicts (split on '#')."""
-    entries, cur = [], {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(("Filetype", "Version")):
-            continue
-        if line == "#":
-            if cur:
-                entries.append(cur)
-                cur = {}
-            continue
-        key, sep, val = line.partition(":")
-        if sep:
-            cur[key.strip()] = val.strip()
-    if cur:
-        entries.append(cur)
-    return entries
-
-
-def _le(field):
-    """'04 03 00 00' -> integer 0x0304 (little-endian)."""
-    out = 0
-    for i, byte in enumerate(field.split()):
-        out |= int(byte, 16) << (8 * i)
-    return out
-
-
-def emit_raw(entry):
-    freq = int(entry.get("frequency", "38000"))
-    nums = [int(x) for x in entry["data"].split()]
-    # Flipper raw data is all-positive, alternating mark/space starting on a
-    # mark. ESPHome wants signed: + = carrier on (mark), - = off (space).
-    code = [n if i % 2 == 0 else -n for i, n in enumerate(nums)]
-    return ("transmit_raw", {"carrier_frequency": freq, "code": code})
-
-
-# Every parsed protocol is encoded by the infrared-protocols library — we keep no
-# protocol math of our own. The library returns raw timings, so every parsed
-# signal is emitted as transmit_raw. (Flipper `type: raw` is a direct passthrough;
-# there is no protocol to reuse there.)
-def _command_for(entry):
-    """Build an infrared_protocols Command for a Flipper *parsed* entry.
-
-    Returns a Command, or None if the protocol isn't one the library encodes.
-    Field values pass straight through so the library's own range checks reject
-    bad data (raising ValueError) rather than us emitting a wrong-but-plausible
-    code. Imports are local so the core stays importable without the library.
-    """
-    proto = entry.get("protocol", "")
-    addr = _le(entry["address"])
-    cmd = _le(entry["command"])
-
-    if proto in ("NEC", "NECext"):
-        from infrared_protocols.commands.nec import NECCommand
-
-        # NECCommand selects standard (<=0xFF, adds inversion) vs extended
-        # (16-bit) from the address width — matching Flipper NEC vs NECext.
-        return NECCommand(address=addr & 0xFFFF, command=cmd & 0xFF)
-    if proto in SONY_ADDRESS_BITS:
-        from infrared_protocols.commands.sony import SonyCommand
-
-        return SonyCommand(address=addr, address_bits=SONY_ADDRESS_BITS[proto], command=cmd)
-    if proto == "Samsung32":
-        from infrared_protocols.commands.samsung import Samsung32Command
-
-        return Samsung32Command(address=addr & 0xFFFF, command=cmd & 0xFF)
-    if proto in ("RC5", "RC5X"):
-        from infrared_protocols.commands.rc5 import RC5Command
-
-        return RC5Command(address=addr, command=cmd)
-    if proto == "Sharp":
-        from infrared_protocols.commands.sharp import SharpCommand
-
-        return SharpCommand(address=addr, command=cmd)
-    return None
-
-
-def emit_parsed(entry):
-    """Encode a parsed protocol to transmit_raw via the library.
-
-    Returns ('transmit_raw', {...}) or None if unmapped. May raise ValueError
-    (bad fields) or ImportError (library absent); the caller falls back to a
-    `# TODO unsupported` comment.
-    """
-    command = _command_for(entry)
-    if command is None:
-        return None
-    return ("transmit_raw", {"carrier_frequency": command.modulation, "code": command.get_raw_timings()})
 
 
 def _button_name(prefix, name):
@@ -226,28 +133,25 @@ def _device_name(path):
     return " ".join(name)
 
 
-def _slug(text, prefix="ir"):
-    """Stable, valid, non-reserved ESPHome id ('Return' -> tv_sony_return).
+def _key(name):
+    """The button-id key for a raw name: its canonical control id, else a slug.
 
-    `prefix` (derived from the code-set path, e.g. 'tv_sony' / 'kvm_generic')
-    namespaces ids so buttons from different remotes never collide, and it
-    guarantees a leading letter that dodges ESPHome / C++ reserved words
-    (return, switch, class, default, …) bare button names would collide with.
+    Resolved at *generation* time via ir-canonical so the same control gets the
+    same id across remotes (VOL+, Vol_up, VOLUME_UP all -> volume_up). Unmapped
+    names keep a sanitized form; the path-derived prefix in render() guarantees a
+    leading letter, dodging ESPHome/C++ reserved words (return, switch, …).
     """
-    s = _sanitize(text)
-    return f"{prefix}_{s}" if s else f"{prefix}_unnamed"
+    return _resolve(name) or _canonical(name) or _sanitize(name) or "unnamed"
 
 
-def _append_button(out, bname, carrier, code, tx_id, repeat, id_prefix="ir", device_id=None):
-    """Append one template button that fires a transmit_raw. Shared by every
-    adapter — after encoding, all output is transmit_raw, so this is the only
-    button renderer. `repeat` adds the transmit-layer repeat (library frames are
-    single); a Flipper raw capture passes False (authoritative, sent as-is).
-    `id_prefix` namespaces the button id; `device_id` groups it under the
-    component's sub-device (both derived from the code-set path)."""
+def _append_button(out, bid, bname, carrier, code, tx_id, repeat, device_id=None):
+    """Append one template button that fires a transmit_raw. `bid` is the already
+    namespaced ESPHome id; `repeat` is the transmit-layer repeat count (>1 only for
+    library-encoded parsed frames — a raw capture is authoritative and passes 1).
+    `device_id` groups the button under the component's sub-device."""
     code_str = ", ".join(str(x) for x in code)
     out.append("  - platform: template")
-    out.append(f"    id: {_slug(bname, id_prefix)}")
+    out.append(f"    id: {bid}")
     out.append(f'    name: "{bname}"')
     if device_id:
         out.append(f"    device_id: {device_id}")
@@ -257,65 +161,28 @@ def _append_button(out, bname, carrier, code, tx_id, repeat, id_prefix="ir", dev
         out.append(f"          transmitter_id: {tx_id}")
     out.append(f"          carrier_frequency: {carrier}")
     out.append(f"          code: [{code_str}]")
-    if repeat:
+    if repeat and repeat > 1:
         out.append("          repeat:")
-        out.append(f"            times: {PARSED_REPEAT_TIMES}")
+        out.append(f"            times: {repeat}")
         out.append(f"            wait_time: {PARSED_REPEAT_WAIT}")
 
 
-def generate(entries, ref, src, tx_id, prefix):
-    """flipper adapter: render a component from parsed Flipper `.ir` entries."""
+def render(signals, src, source, tx_id=None, prefix=""):
+    """Render homeops-ir-adapter Signals into an ESPHome component.
+
+    `signals` are `ir_adapter.Signal`s (raw timings come from the adapter; parsed
+    protocols are encoded by infrared-protocols). `src` is the code-set path (for
+    the sub-device id/name), `source` the human provenance for the header. Button
+    ids are `<path-prefix>_<canonical>` (resolved here via ir-canonical), so the
+    same control is identically named on every remote; duplicates drop (first
+    wins). One sub-device per component groups the remote's buttons in HA, and
+    package list-merge concatenates each included component's device.
+    """
     id_prefix = _id_prefix(src)
     out = [
-        f"# Generated from {FLIPPER_REPO}@{ref}",
+        f"# Generated from {source}",
         f"#   path: {src}",
-        "# Parsed protocols encoded by infrared-protocols -> transmit_raw.",
-        "# VERIFY parsed codes against a live remote_receiver capture.",
-        # One sub-device per component groups all of a remote's buttons in HA;
-        # package list-merge concatenates each included component's device.
-        "esphome:",
-        "  devices:",
-        f"    - id: {id_prefix}",
-        f'      name: "{_device_name(src)}"',
-        "button:",
-    ]
-    skipped = []
-    for entry in entries:
-        name = entry.get("name", "unnamed")
-        typ = entry.get("type")
-        proto = entry.get("protocol", "")
-        try:
-            # raw is a passthrough; every parsed protocol is encoded by the
-            # library. Both yield transmit_raw.
-            result = emit_raw(entry) if typ == "raw" else emit_parsed(entry)
-        except (KeyError, ValueError, ImportError):
-            skipped.append((name, f"{proto or typ} (encode error)"))
-            continue
-        if result is None:
-            skipped.append((name, proto or typ or "unknown"))
-            continue
-        _action, args = result
-        # A raw capture is authoritative; library-encoded parsed frames are
-        # single and need a transmit-layer repeat.
-        _append_button(out, _button_name(prefix, name), args["carrier_frequency"],
-                       args["code"], tx_id, repeat=(typ != "raw"), id_prefix=id_prefix,
-                       device_id=id_prefix)
-
-    for name, why in skipped:
-        out.append(f"# TODO unsupported: {name} ({why})")
-    return "\n".join(out) + "\n"
-
-
-def generate_from_commands(named_commands, src, tx_id=None):
-    """ha-ir adapter: render a component from infrared-protocols `Command`s.
-
-    `named_commands` is an iterable of (name, Command). Each is a single library
-    frame -> transmit_raw with a transmit-layer repeat. Duplicate button ids are
-    dropped (first wins)."""
-    id_prefix = _id_prefix(src)
-    out = [
-        f"# Generated from infrared-protocols code set: {src}",
-        "# Curated codes encoded by infrared-protocols -> transmit_raw.",
+        "# Signals via homeops-ir-adapter; canonical ids via homeops-ir-canonical.",
         "# VERIFY codes against a live remote_receiver capture.",
         "esphome:",
         "  devices:",
@@ -324,13 +191,13 @@ def generate_from_commands(named_commands, src, tx_id=None):
         "button:",
     ]
     seen = set()
-    for name, command in named_commands:
-        bid = _slug(name, id_prefix)
+    for sig in signals:
+        bid = f"{id_prefix}_{_key(sig.name)}"
         if bid in seen:
             continue
         seen.add(bid)
-        _append_button(out, name, command.modulation, command.get_raw_timings(),
-                       tx_id, repeat=True, id_prefix=id_prefix, device_id=id_prefix)
+        _append_button(out, bid, _button_name(prefix, sig.name), sig.carrier_hz,
+                       sig.timings, tx_id, repeat=sig.repeat, device_id=id_prefix)
     return "\n".join(out) + "\n"
 
 
@@ -351,12 +218,14 @@ def serve(port=9418, ref="main", path=None, out="component.yaml", tx_id=None, pr
     import subprocess
     import tempfile
 
+    from ir_adapter import flipper as _flipper
+
     if not path:
         raise SystemExit("--serve requires --path")
 
     webroot = tempfile.mkdtemp(prefix="irdb-")
     work = tempfile.mkdtemp(prefix="irdb-work-")
-    yaml = generate(parse_ir(fetch(ref, path)), ref, path, tx_id, prefix)
+    yaml = render(_flipper.from_text(fetch(ref, path)), path, f"{FLIPPER_REPO}@{ref}", tx_id, prefix)
     out_path = os.path.join(work, out)
     os.makedirs(os.path.dirname(out_path) or work, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as handle:
@@ -440,6 +309,8 @@ def _populate_flipper(work, repo, branch):
     import subprocess
     import tempfile
 
+    from ir_adapter import flipper as _flipper
+
     src = tempfile.mkdtemp(prefix="irdb-src-")
     url = f"https://github.com/{repo}.git"
 
@@ -463,7 +334,7 @@ def _populate_flipper(work, repo, branch):
             rel = os.path.relpath(os.path.join(root, filename), src)
             try:
                 with open(os.path.join(root, filename), encoding="utf-8", errors="replace") as handle:
-                    component = generate(parse_ir(handle.read()), branch, rel, None, "")
+                    component = render(_flipper.from_text(handle.read()), rel, f"{repo}@{branch}")
             except Exception:
                 continue
             # ESPHome only accepts .yaml/.yml package files, so mirror the path
@@ -476,61 +347,14 @@ def _populate_flipper(work, repo, branch):
     return count
 
 
-def _ha_ir_codesets():
-    """Yield (relpath, [(name, Command), ...]) for every infrared-protocols code
-    set — e.g. 'vizio/tv' -> [('POWER', NECCommand(...)), ...]. Each `codes`
-    submodule exposes Enums with a `.to_command()`; we enumerate their members.
-
-    The library's brand dirs (codes/vizio/…) have no __init__.py (namespace
-    packages), which pkgutil.walk_packages won't descend into — so we walk the
-    package directory on disk and import each module by name instead.
-    """
-    import enum
-    import importlib
-
-    import infrared_protocols.codes as codes_pkg
-    from infrared_protocols.commands import Command
-
-    base = codes_pkg.__name__
-    for root in list(codes_pkg.__path__):
-        for dirpath, _dirs, files in os.walk(root):
-            for filename in sorted(files):
-                if not filename.endswith(".py") or filename == "__init__.py":
-                    continue
-                relmod = os.path.relpath(os.path.join(dirpath, filename), root)[:-3]
-                relmod = relmod.replace(os.sep, ".")
-                modname = f"{base}.{relmod}"
-                try:
-                    mod = importlib.import_module(modname)
-                except Exception:
-                    continue
-                named, seen = [], set()
-                for attr in vars(mod).values():
-                    if not (isinstance(attr, type) and issubclass(attr, enum.Enum)):
-                        continue
-                    if attr.__module__ != modname or not hasattr(attr, "to_command"):
-                        continue
-                    for member in attr:
-                        if member.name in seen:
-                            continue
-                        try:
-                            command = member.to_command()
-                        except Exception:
-                            continue
-                        if not isinstance(command, Command):
-                            continue
-                        seen.add(member.name)
-                        named.append((member.name, command))
-                if named:
-                    yield relmod.replace(".", "/"), named
-
-
 def _populate_ha_ir(work):
     """ha-ir adapter: expose infrared-protocols' own curated code sets as
-    components at `<brand>/<type>.yaml` (e.g. vizio/tv.yaml)."""
+    components at `<brand>/<type>.yaml` (e.g. vizio/tv.yaml), via ir_adapter."""
+    from ir_adapter import ha as _ha
+
     count = 0
-    for rel, named in _ha_ir_codesets():
-        component = generate_from_commands(named, rel)
+    for rel, signals in _ha.codesets():
+        component = render(signals, rel, f"infrared-protocols code set: {rel}")
         outpath = os.path.join(work, rel + ".yaml")
         os.makedirs(os.path.dirname(outpath), exist_ok=True)
         with open(outpath, "w", encoding="utf-8") as handle:
@@ -861,6 +685,8 @@ def main(argv=None):
     if not args.file and not args.path:
         parser.error("one of --file / --path is required (or use --serve)")
 
+    from ir_adapter import flipper as _flipper
+
     if args.file:
         with open(args.file, encoding="utf-8") as handle:
             text = handle.read()
@@ -869,7 +695,8 @@ def main(argv=None):
         text = fetch(args.ref or "main", args.path, repo=args.repo)
         ref, src = args.ref or "main", args.path
 
-    sys.stdout.write(generate(parse_ir(text), ref, src, args.tx_id, args.prefix))
+    sys.stdout.write(render(_flipper.from_text(text), src, f"{args.repo}@{ref}",
+                            args.tx_id, args.prefix))
     return 0
 
 
