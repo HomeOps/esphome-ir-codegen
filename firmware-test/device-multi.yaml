@@ -1,0 +1,35 @@
+# Multi-remote sub-device merge test. Two flipper packages each contribute an
+# `esphome: devices:` entry from a SEPARATE file; ESPHome deep-merges the package
+# blocks (dicts merge, lists concatenate), so both sub-devices and every button's
+# device_id must resolve. `esphome config` validates this merge in CI — proving
+# you can include many remotes and each is grouped under its own HA device.
+esphome:
+  name: ir-multi
+
+esp32:
+  board: m5stack-atom
+  framework:
+    type: arduino
+
+logger:
+
+remote_transmitter:
+  id: ir_tx
+  pin:
+    number: GPIO12
+    ignore_strapping_warning: true
+  carrier_duty_percent: 50%
+  non_blocking: true
+
+packages:
+  # Two remotes from the same on-demand source repo — two sub-devices after merge:
+  #   Sony_Bravia   -> device tv_sony_bravia
+  #   Samsung TV    -> device tv_samsung_aa59_00443a
+  sony_bravia:
+    url: http://localhost:9418/Lucaslhm/Flipper-IRDB.git
+    ref: main
+    files: [TVs/Sony/Sony_Bravia.yaml]
+  samsung_tv:
+    url: http://localhost:9418/Lucaslhm/Flipper-IRDB.git
+    ref: main
+    files: [TVs/Samsung/Samsung_AA59-00443A.yaml]

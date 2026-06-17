@@ -79,6 +79,21 @@ jobs:
       - name: Compile firmware — ha-ir adapter (Vizio TV)
         run: esphome compile firmware-test/device-ha-ir.yaml
 
+      # Multi-remote sub-device merge: two flipper packages each carry their own
+      # `esphome: devices:`; ESPHome must concatenate them and resolve every
+      # device_id. `esphome config` fully validates the merge (it errors on a
+      # dangling device_id), so both sub-devices appearing proves grouping works.
+      - name: Validate multi-remote sub-device merge
+        run: |
+          esphome config firmware-test/device-multi.yaml | tee _multi.txt
+          # Device names only appear in the merged esphome.devices block (buttons
+          # are named "Power"), so matching both proves the lists concatenated.
+          grep -q "name: Sony Bravia" _multi.txt
+          grep -q "name: Samsung AA59-00443A" _multi.txt
+          grep -q "device_id: tv_sony_bravia" _multi.txt
+          grep -q "device_id: tv_samsung_aa59_00443a" _multi.txt
+          echo "both sub-devices present and referenced after package merge"
+
       - name: Capture the generated components (the useful artifacts)
         run: |
           rm -rf _generated _artifact; mkdir -p _artifact

@@ -202,6 +202,30 @@ def _id_prefix(path):
     return prefix or "ir"
 
 
+def _device_name(path):
+    """Human sub-device name from a code-set path — brand[+model], original case.
+
+    'TVs/Sony/Sony_Bravia.ir'              -> 'Sony Bravia'
+    'KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir' -> 'Generic'
+    'TVs/LG/LG_AKB.ir'                     -> 'LG AKB'
+
+    Mirrors `_id_prefix` but drops the category and keeps the source case, so the
+    device groups all of a remote's buttons under a readable name. The matching
+    id (`tv_sony_bravia`) is `_id_prefix(path)`.
+    """
+    parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
+    if not parts:
+        return "IR"
+    tokens = [t for t in os.path.splitext(parts[-1])[0].split("_") if t]
+    if not tokens:
+        return "IR"
+    name = [tokens[0]]
+    parent = parts[-2] if len(parts) >= 2 else ""
+    if parent and parent.lower() == tokens[0].lower() and len(tokens) > 1:
+        name.append(tokens[1])
+    return " ".join(name)
+
+
 def _slug(text, prefix="ir"):
     """Stable, valid, non-reserved ESPHome id ('Return' -> tv_sony_return).
 
@@ -214,16 +238,19 @@ def _slug(text, prefix="ir"):
     return f"{prefix}_{s}" if s else f"{prefix}_unnamed"
 
 
-def _append_button(out, bname, carrier, code, tx_id, repeat, id_prefix="ir"):
+def _append_button(out, bname, carrier, code, tx_id, repeat, id_prefix="ir", device_id=None):
     """Append one template button that fires a transmit_raw. Shared by every
     adapter — after encoding, all output is transmit_raw, so this is the only
     button renderer. `repeat` adds the transmit-layer repeat (library frames are
     single); a Flipper raw capture passes False (authoritative, sent as-is).
-    `id_prefix` namespaces the button id (derived from the code-set path)."""
+    `id_prefix` namespaces the button id; `device_id` groups it under the
+    component's sub-device (both derived from the code-set path)."""
     code_str = ", ".join(str(x) for x in code)
     out.append("  - platform: template")
     out.append(f"    id: {_slug(bname, id_prefix)}")
     out.append(f'    name: "{bname}"')
+    if device_id:
+        out.append(f"    device_id: {device_id}")
     out.append("    on_press:")
     out.append("      - remote_transmitter.transmit_raw:")
     if tx_id:
@@ -244,6 +271,12 @@ def generate(entries, ref, src, tx_id, prefix):
         f"#   path: {src}",
         "# Parsed protocols encoded by infrared-protocols -> transmit_raw.",
         "# VERIFY parsed codes against a live remote_receiver capture.",
+        # One sub-device per component groups all of a remote's buttons in HA;
+        # package list-merge concatenates each included component's device.
+        "esphome:",
+        "  devices:",
+        f"    - id: {id_prefix}",
+        f'      name: "{_device_name(src)}"',
         "button:",
     ]
     skipped = []
@@ -265,7 +298,8 @@ def generate(entries, ref, src, tx_id, prefix):
         # A raw capture is authoritative; library-encoded parsed frames are
         # single and need a transmit-layer repeat.
         _append_button(out, _button_name(prefix, name), args["carrier_frequency"],
-                       args["code"], tx_id, repeat=(typ != "raw"), id_prefix=id_prefix)
+                       args["code"], tx_id, repeat=(typ != "raw"), id_prefix=id_prefix,
+                       device_id=id_prefix)
 
     for name, why in skipped:
         out.append(f"# TODO unsupported: {name} ({why})")
@@ -278,13 +312,17 @@ def generate_from_commands(named_commands, src, tx_id=None):
     `named_commands` is an iterable of (name, Command). Each is a single library
     frame -> transmit_raw with a transmit-layer repeat. Duplicate button ids are
     dropped (first wins)."""
+    id_prefix = _id_prefix(src)
     out = [
         f"# Generated from infrared-protocols code set: {src}",
         "# Curated codes encoded by infrared-protocols -> transmit_raw.",
         "# VERIFY codes against a live remote_receiver capture.",
+        "esphome:",
+        "  devices:",
+        f"    - id: {id_prefix}",
+        f'      name: "{_device_name(src)}"',
         "button:",
     ]
-    id_prefix = _id_prefix(src)
     seen = set()
     for name, command in named_commands:
         bid = _slug(name, id_prefix)
@@ -292,7 +330,7 @@ def generate_from_commands(named_commands, src, tx_id=None):
             continue
         seen.add(bid)
         _append_button(out, name, command.modulation, command.get_raw_timings(),
-                       tx_id, repeat=True, id_prefix=id_prefix)
+                       tx_id, repeat=True, id_prefix=id_prefix, device_id=id_prefix)
     return "\n".join(out) + "\n"
 
 

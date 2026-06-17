@@ -106,11 +106,16 @@ trailing `s`; the brand is the filename's first token. When the file sits in a
 brand folder that repeats the brand (Flipper's `Category/Brand/Brand_Model`
 layout), the model word is kept so distinct models stay distinct:
 
-| `files:` path | Button (key `Power`) |
-|---------------|----------------------|
-| `TVs/Sony/Sony_Bravia.yaml` | `tv_sony_bravia_power` |
-| `KVMs/Generic_8K_HDMI_DP_4Port_KVM.yaml` | `kvm_generic_power` |
-| `vizio/tv.yaml` (ha-ir) | `vizio_tv_power` |
+| `files:` path | Sub-device | Button (key `Power`) |
+|---------------|------------|----------------------|
+| `TVs/Sony/Sony_Bravia.yaml` | Sony Bravia | `tv_sony_bravia_power` |
+| `KVMs/Generic_8K_HDMI_DP_4Port_KVM.yaml` | Generic | `kvm_generic_power` |
+| `vizio/tv.yaml` (ha-ir) | tv | `vizio_tv_power` |
+
+Each included component also **auto-creates a Home Assistant sub-device** (via
+`esphome: devices:`) named after the remote — so every button from one `files:`
+entry is grouped under its own device in HA, no manual wiring. Requires an
+ESPHome version with sub-device support (2025.x+).
 
 ## Source repo & ref are per-device
 
