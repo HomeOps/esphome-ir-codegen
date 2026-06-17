@@ -3,21 +3,28 @@
 
 Two modes:
   * one-shot CLI : print the generated ESPHome YAML for a Flipper file.
-  * --serve      : run a smart-HTTP **git service** that builds one bare repo per
-                   *adapter*, so an ESPHome build pulls a component with
-                   `packages: url: http://host/<adapter>.git, files: [<path>]`.
+  * --serve      : run a smart-HTTP **git service**. The Flipper source repo *is*
+                   the URL path and the ref *is* the device's `packages: ref:`, so
+                   an ESPHome build pulls a component with
+                   `url: http://host/<owner>/<name>.git, ref: <branch>,
+                    files: [<path>]`. The matching repo@ref is cloned and
+                   transformed *on demand* — cached, and rebuilt when the source
+                   HEAD moves. `ha-ir.git` is a reserved path served from the
+                   installed infrared-protocols library.
 
-An *adapter* is a source of device code sets; the shared infrared-protocols
-encoder turns every command into transmit_raw, so adapters differ only in source
-and path layout:
-  * flipper.git -> Flipper-IRDB `.ir` files (path mirrors the tree, e.g.
-                   TVs/Sony/Sony_Bravia.yaml)
-  * ha-ir.git   -> infrared-protocols' own curated code sets (e.g. vizio/tv.yaml)
+The shared infrared-protocols encoder turns every command into transmit_raw, so
+the two sources differ only in path layout:
+  * <owner>/<name>.git -> a Flipper-IRDB repo or fork; path mirrors the tree,
+                          e.g. TVs/Sony/Sony_Bravia.yaml (the device picks the
+                          source repo by URL and the ref by `ref:`).
+  * ha-ir.git          -> infrared-protocols' own curated code sets (vizio/tv.yaml)
 
 Design decisions (locked):
-  * Reproducibility: the flipper adapter pins a Flipper-IRDB ref (--ref).
-  * The service builds at startup; ESPHome clones at *compile* time.
-  * Adding an adapter is just another `<name>.git` under the cache dir.
+  * repo + ref are per-device (URL path + `ref:`), never add-on config.
+  * Build on demand keyed by (repo, ref); refresh when the source HEAD moves, so
+    new commits propagate without restarting the add-on.
+  * `ha-ir.git` is a reserved, library-built repo; adding another reserved
+    adapter is just one more prebuilt `<name>.git` under the cache dir.
 
 Protocol coverage:
   * type: raw                            -> transmit_raw (direct passthrough)
@@ -35,7 +42,9 @@ is *valid*, not that the code is the *correct* one for your device.
 
 import argparse
 import os
+import re
 import sys
+import threading
 import urllib.request
 
 FLIPPER_REPO = "Lucaslhm/Flipper-IRDB"
@@ -154,29 +163,94 @@ def _button_name(prefix, name):
     return f"{prefix} {name}".strip() if prefix else name
 
 
-def _slug(text):
-    """Stable, valid, non-reserved ESPHome id ('Return' -> ir_return).
-
-    Always `ir_`-prefixed: it guarantees a leading letter and dodges ESPHome /
-    C++ reserved words (return, switch, class, default, …) that arbitrary remote
-    button names would otherwise collide with.
-    """
+def _sanitize(text):
+    """Lower-case, collapse non-alphanumerics to single underscores, trim."""
     s = "".join(c if c.isalnum() else "_" for c in text.lower())
     while "__" in s:
         s = s.replace("__", "_")
-    s = s.strip("_")
-    return f"ir_{s}" if s else "ir_unnamed"
+    return s.strip("_")
 
 
-def _append_button(out, bname, carrier, code, tx_id, repeat):
+def _id_prefix(path):
+    """Derive a button-id prefix '<category>_<brand>[_<model>]' from a path.
+
+    'KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir' -> 'kvm_generic'        (model dropped)
+    'TVs/Sony/Sony_Bravia.ir'              -> 'tv_sony_bravia'     (model kept)
+    'vizio/tv'                             -> 'vizio_tv'           (ha-ir layout)
+
+    The category (first path segment) is singularized by dropping a trailing
+    's'; the brand is the first underscore-token of the filename. Flipper's
+    Category/Brand/Brand_Model layout repeats the brand in the file name, so when
+    the filename's leading token matches the parent (brand) folder, the next word
+    (the model) is kept — otherwise distinct models would collapse to one prefix.
+    A single-segment path contributes only the brand; falls back to 'ir' when
+    nothing usable remains, preserving the old leading-letter id guarantee.
+    """
+    parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
+    if not parts:
+        return "ir"
+    tokens = [t for t in os.path.splitext(parts[-1])[0].split("_") if t]
+    brand = tokens[0] if tokens else ""
+    category = parts[0] if len(parts) >= 2 else ""
+    if category.lower().endswith("s") and len(category) > 1:
+        category = category[:-1]
+    pieces = [category, brand]
+    parent = parts[-2] if len(parts) >= 2 else ""
+    if parent and brand and parent.lower() == brand.lower() and len(tokens) > 1:
+        pieces.append(tokens[1])   # brand repeated in the file name -> keep the model
+    prefix = _sanitize("_".join(p for p in pieces if p))
+    return prefix or "ir"
+
+
+def _device_name(path):
+    """Human sub-device name from a code-set path — brand[+model], original case.
+
+    'TVs/Sony/Sony_Bravia.ir'              -> 'Sony Bravia'
+    'KVMs/Generic_8K_HDMI_DP_4Port_KVM.ir' -> 'Generic'
+    'TVs/LG/LG_AKB.ir'                     -> 'LG AKB'
+
+    Mirrors `_id_prefix` but drops the category and keeps the source case, so the
+    device groups all of a remote's buttons under a readable name. The matching
+    id (`tv_sony_bravia`) is `_id_prefix(path)`.
+    """
+    parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
+    if not parts:
+        return "IR"
+    tokens = [t for t in os.path.splitext(parts[-1])[0].split("_") if t]
+    if not tokens:
+        return "IR"
+    name = [tokens[0]]
+    parent = parts[-2] if len(parts) >= 2 else ""
+    if parent and parent.lower() == tokens[0].lower() and len(tokens) > 1:
+        name.append(tokens[1])
+    return " ".join(name)
+
+
+def _slug(text, prefix="ir"):
+    """Stable, valid, non-reserved ESPHome id ('Return' -> tv_sony_return).
+
+    `prefix` (derived from the code-set path, e.g. 'tv_sony' / 'kvm_generic')
+    namespaces ids so buttons from different remotes never collide, and it
+    guarantees a leading letter that dodges ESPHome / C++ reserved words
+    (return, switch, class, default, …) bare button names would collide with.
+    """
+    s = _sanitize(text)
+    return f"{prefix}_{s}" if s else f"{prefix}_unnamed"
+
+
+def _append_button(out, bname, carrier, code, tx_id, repeat, id_prefix="ir", device_id=None):
     """Append one template button that fires a transmit_raw. Shared by every
     adapter — after encoding, all output is transmit_raw, so this is the only
     button renderer. `repeat` adds the transmit-layer repeat (library frames are
-    single); a Flipper raw capture passes False (authoritative, sent as-is)."""
+    single); a Flipper raw capture passes False (authoritative, sent as-is).
+    `id_prefix` namespaces the button id; `device_id` groups it under the
+    component's sub-device (both derived from the code-set path)."""
     code_str = ", ".join(str(x) for x in code)
     out.append("  - platform: template")
-    out.append(f"    id: {_slug(bname)}")
+    out.append(f"    id: {_slug(bname, id_prefix)}")
     out.append(f'    name: "{bname}"')
+    if device_id:
+        out.append(f"    device_id: {device_id}")
     out.append("    on_press:")
     out.append("      - remote_transmitter.transmit_raw:")
     if tx_id:
@@ -191,11 +265,18 @@ def _append_button(out, bname, carrier, code, tx_id, repeat):
 
 def generate(entries, ref, src, tx_id, prefix):
     """flipper adapter: render a component from parsed Flipper `.ir` entries."""
+    id_prefix = _id_prefix(src)
     out = [
         f"# Generated from {FLIPPER_REPO}@{ref}",
         f"#   path: {src}",
         "# Parsed protocols encoded by infrared-protocols -> transmit_raw.",
         "# VERIFY parsed codes against a live remote_receiver capture.",
+        # One sub-device per component groups all of a remote's buttons in HA;
+        # package list-merge concatenates each included component's device.
+        "esphome:",
+        "  devices:",
+        f"    - id: {id_prefix}",
+        f'      name: "{_device_name(src)}"',
         "button:",
     ]
     skipped = []
@@ -217,7 +298,8 @@ def generate(entries, ref, src, tx_id, prefix):
         # A raw capture is authoritative; library-encoded parsed frames are
         # single and need a transmit-layer repeat.
         _append_button(out, _button_name(prefix, name), args["carrier_frequency"],
-                       args["code"], tx_id, repeat=(typ != "raw"))
+                       args["code"], tx_id, repeat=(typ != "raw"), id_prefix=id_prefix,
+                       device_id=id_prefix)
 
     for name, why in skipped:
         out.append(f"# TODO unsupported: {name} ({why})")
@@ -230,20 +312,25 @@ def generate_from_commands(named_commands, src, tx_id=None):
     `named_commands` is an iterable of (name, Command). Each is a single library
     frame -> transmit_raw with a transmit-layer repeat. Duplicate button ids are
     dropped (first wins)."""
+    id_prefix = _id_prefix(src)
     out = [
         f"# Generated from infrared-protocols code set: {src}",
         "# Curated codes encoded by infrared-protocols -> transmit_raw.",
         "# VERIFY codes against a live remote_receiver capture.",
+        "esphome:",
+        "  devices:",
+        f"    - id: {id_prefix}",
+        f'      name: "{_device_name(src)}"',
         "button:",
     ]
     seen = set()
     for name, command in named_commands:
-        bid = _slug(name)
+        bid = _slug(name, id_prefix)
         if bid in seen:
             continue
         seen.add(bid)
         _append_button(out, name, command.modulation, command.get_raw_timings(),
-                       tx_id, repeat=True)
+                       tx_id, repeat=True, id_prefix=id_prefix, device_id=id_prefix)
     return "\n".join(out) + "\n"
 
 
@@ -452,43 +539,205 @@ def _populate_ha_ir(work):
     return count
 
 
-def serve_http(port=9418, repo=FLIPPER_REPO, ref=None, adapters=("flipper", "ha-ir")):
-    """Serve each adapter as its own bare repo over smart HTTP.
+_REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
-    An adapter is a *source* of device code sets; the shared infrared-protocols
-    encoder turns every command into transmit_raw. Each adapter is one repo:
 
-        flipper.git  -> Flipper-IRDB (`repo`), files: [TVs/Sony/Sony_Bravia.yaml]
-        ha-ir.git    -> infrared-protocols code sets, files: [vizio/tv.yaml]
+def _repo_from_path(path):
+    """'/Owner/Name.git/git-upload-pack' -> 'Owner/Name'; '/ha-ir.git/…' -> 'ha-ir'.
 
-    A device clones one adapter and `files:` selects the remote:
+    Returns the repo segment up to (not including) the `.git` that ends a path
+    segment, or None when the path has no repo. The flipper source repo is the
+    URL path, so this is how a clone of `http://host/<owner>/<name>.git` names
+    its source. The `(?:/|$)` anchor keeps names like `.github` from matching.
+    """
+    m = re.match(r"/?(.+?\.git)(?:/|$)", path)
+    return m.group(1)[:-4] if m else None
+
+
+def _valid_repo(repo):
+    """A flipper source must be exactly owner/name (no traversal, one slash)."""
+    return bool(_REPO_RE.fullmatch(repo)) and ".." not in repo
+
+
+def _source_url(repo):
+    name = repo[:-4] if repo.endswith(".git") else repo
+    return f"https://github.com/{name}.git"
+
+
+def _pkt_lines(body):
+    """Yield each pkt-line payload from a git smart-protocol request body.
+
+    pkt-line = 4 hex length bytes (covering themselves) + payload; lengths < 4
+    are the flush/delim/response-end markers (0000/0001/0002).
+    """
+    i, n = 0, len(body)
+    while i + 4 <= n:
+        try:
+            length = int(body[i : i + 4], 16)
+        except ValueError:
+            return
+        if length < 4:
+            i += 4
+            continue
+        yield body[i + 4 : i + length]
+        i += length
+
+
+def _v2_command(body):
+    """The git protocol-v2 command (`ls-refs` / `fetch`) in a request, or None."""
+    for line in _pkt_lines(body):
+        if line.startswith(b"command="):
+            return line[len(b"command=") :].strip().decode("utf-8", "replace")
+    return None
+
+
+def _wanted_refs(body):
+    """Branch/tag names a protocol-v2 `ls-refs` request is resolving.
+
+    To resolve `<ref>`, git sends several `ref-prefix` lines (refs/heads/<ref>,
+    refs/tags/<ref>, <ref>, …). We return the candidate names (heads/tags tails
+    first, then bare), so the on-demand builder knows which ref to materialize.
+    """
+    heads, bare = [], []
+    for line in _pkt_lines(body):
+        if not line.startswith(b"ref-prefix "):
+            continue
+        val = line[len(b"ref-prefix ") :].strip().decode("utf-8", "replace")
+        if not val or val == "HEAD" or val == "refs/":
+            continue
+        if val.startswith("refs/heads/"):
+            heads.append(val[len("refs/heads/") :])
+        elif val.startswith("refs/tags/"):
+            heads.append(val[len("refs/tags/") :])
+        elif not val.startswith("refs/"):
+            bare.append(val)
+    out, seen = [], set()
+    for name in heads + bare:
+        if name and name != "HEAD" and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _ls_remote_sha(repo, ref):
+    """Current sha of <ref> on the source repo, or None if unknown/unreachable."""
+    import subprocess
+
+    url = _source_url(repo)
+    for spec in (f"refs/heads/{ref}", f"refs/tags/{ref}", ref):
+        try:
+            res = subprocess.run(
+                ["git", "ls-remote", url, spec],
+                capture_output=True, text=True, timeout=20,
+            )
+        except Exception:
+            return None
+        out = res.stdout.strip()
+        if out:
+            return out.split()[0]
+    return None
+
+
+def _ensure_repo_dir(cache, repo):
+    """Make sure `<cache>/<repo>.git` exists as a bare repo so git-http-backend
+    can answer a protocol-v2 capability advertisement before any ref is built."""
+    import subprocess
+
+    bare = os.path.join(cache, repo + ".git")
+    if not os.path.isdir(bare):
+        os.makedirs(os.path.dirname(bare), exist_ok=True)
+        subprocess.run(["git", "init", "-q", "--bare", bare], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _ensure_flipper_branch(cache, repo, ref, built, locks, locks_guard):
+    """On demand: build/refresh branch <ref> of <repo>'s transformed components in
+    the per-repo bare repo `<cache>/<repo>.git`, rebuilding only when the source
+    HEAD moved. The bare repo accumulates one branch per requested ref, so the
+    fixed URL path serves any ref a device asks for. Serves the cached build if
+    the source can't be reached.
+    """
+    import subprocess
+    import tempfile
+
+    bare = os.path.join(cache, repo + ".git")
+    with locks_guard:
+        lock = locks.setdefault(repo, threading.Lock())
+    with lock:
+        os.makedirs(os.path.dirname(bare), exist_ok=True)
+        if not os.path.isdir(bare):
+            subprocess.run(["git", "init", "-q", "--bare", bare], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sha = _ls_remote_sha(repo, ref)
+        key = (repo, ref)
+        has_branch = subprocess.run(
+            ["git", "-C", bare, "rev-parse", "--verify", "-q", f"refs/heads/{ref}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if has_branch and (sha is None or built.get(key) == sha):
+            return  # cached and current (or source unreachable -> serve cache)
+
+        print(f"building {repo}@{ref} on demand (a few minutes) …", flush=True)
+        work = tempfile.mkdtemp(prefix="irdb-build-")
+        try:
+            count = _populate_flipper(work, repo, ref)
+        except Exception as exc:
+            print(f"build failed for {repo}@{ref}: {exc}", flush=True)
+            return
+
+        def git(*args):
+            subprocess.run(["git", "-C", work, *args], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        git("init", "-q")
+        git("config", "user.email", "codegen@local")
+        git("config", "user.name", "ir-codegen")
+        git("add", "-A")
+        git("commit", "-q", "--allow-empty", "-m", f"{repo}@{ref}: {count} components")
+        git("push", "-q", "--force", bare, f"HEAD:refs/heads/{ref}")
+        # Point the served repo's HEAD at a built branch so a bare `git clone`
+        # (no -b) checks out content instead of an unborn default.
+        subprocess.run(["git", "-C", bare, "symbolic-ref", "HEAD", f"refs/heads/{ref}"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        built[key] = sha
+        print(f"served {repo}@{ref}: {count} components", flush=True)
+
+
+def serve_http(port=9418, adapters=("flipper", "ha-ir")):
+    """Smart-HTTP git service: source repo is the URL path, ref is the request.
+
+    A device clones the Flipper source it wants and `files:` selects the remote:
 
         packages:
           x:
-            url: http://<host>:<port>/flipper.git
-            ref: main
+            url: http://<host>:<port>/<owner>/<name>.git   # any Flipper-IRDB repo/fork
+            ref: <branch|tag>                              # built on demand
             files: [TVs/Sony/Sony_Bravia.yaml]
 
-    `repo` is the flipper source (a fork works as-is). `ref` pins the flipper
-    commit (CI does; the add-on uses the default branch). `adapters` selects
-    which repos to build.
+    The matching `<owner>/<name>` @ `ref` is cloned and transformed on the first
+    request and cached, then rebuilt whenever the source branch HEAD moves. The
+    reserved `ha-ir.git` path is prebuilt from the installed infrared-protocols
+    library (it has no source repo). `adapters` selects which sources are served
+    (`flipper` enables on-demand `<owner>/<name>.git`; `ha-ir` prebuilds the
+    reserved repo).
     """
     import http.server
     import subprocess
     import tempfile
     from urllib.parse import urlsplit
 
-    branch = ref or _default_branch(repo)
     cache = tempfile.mkdtemp(prefix="irdb-http-")
-    counts = {}
-    if "flipper" in adapters:
-        print(f"building flipper.git from {repo}@{branch} (first start takes a few minutes) …", flush=True)
-        counts["flipper"] = _make_bare_repo(cache, "flipper", lambda w: _populate_flipper(w, repo, branch))
+    serve_flipper = "flipper" in adapters
+    reserved = set()
     if "ha-ir" in adapters:
-        print("building ha-ir.git from the infrared-protocols code sets …", flush=True)
-        counts["ha-ir"] = _make_bare_repo(cache, "ha-ir", _populate_ha_ir)
-    if not counts:
+        print("building reserved ha-ir.git from the infrared-protocols code sets …", flush=True)
+        _make_bare_repo(cache, "ha-ir", _populate_ha_ir)
+        reserved.add("ha-ir")
+    if not serve_flipper and not reserved:
         raise SystemExit(f"no known adapters in {adapters!r} (expected: flipper, ha-ir)")
+
+    built = {}                       # (repo, ref) -> source sha last built
+    locks, locks_guard = {}, threading.Lock()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -501,6 +750,23 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None, adapters=("flipper", "ha-
 
         def _serve(self):
             split = urlsplit(self.path)
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b""
+
+            repo = _repo_from_path(split.path)
+            if repo and repo not in reserved:
+                # Dynamic flipper source: build the requested ref on demand. The
+                # ref only appears in a protocol-v2 `ls-refs` body; the following
+                # `fetch` reuses the branch we just built (so we skip it there).
+                if not serve_flipper or not _valid_repo(repo):
+                    self.send_error(404, "unknown repo")
+                    return
+                if split.path.endswith("/git-upload-pack") and _v2_command(body) == "ls-refs":
+                    for ref in (_wanted_refs(body) or [_default_branch(repo)]):
+                        _ensure_flipper_branch(cache, repo, ref, built, locks, locks_guard)
+                else:
+                    _ensure_repo_dir(cache, repo)   # v2 caps advertisement needs the dir
+
             # Smart HTTP via git-http-backend (supports shallow clones).
             env = {
                 **os.environ,
@@ -513,8 +779,9 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None, adapters=("flipper", "ha-
                 "GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
                 "REMOTE_ADDR": self.client_address[0],
             }
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            body = self.rfile.read(length) if length else b""
+            # `body` was already read once above (for ref parsing); reusing it
+            # avoids a second drained read that would block. git-http-backend
+            # reads the request from stdin until EOF, so CONTENT_LENGTH is moot.
             proc = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True)
 
             out = proc.stdout
@@ -541,8 +808,11 @@ def serve_http(port=9418, repo=FLIPPER_REPO, ref=None, adapters=("flipper", "ha-
         def log_message(self, *args):
             pass
 
-    summary = ", ".join(f"{name}.git ({n})" for name, n in counts.items())
-    print(f"git-http: http://0.0.0.0:{port}/  serving {summary}  [flipper={repo}@{branch}]", flush=True)
+    sources = []
+    if serve_flipper:
+        sources.append("<owner>/<name>.git (on demand)")
+    sources.extend(f"{name}.git (reserved)" for name in sorted(reserved))
+    print(f"git-http: http://0.0.0.0:{port}/  serving {', '.join(sources)}", flush=True)
     http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
@@ -568,17 +838,12 @@ def main(argv=None):
 
         with open(args.from_options, encoding="utf-8") as handle:
             opts = json.load(handle)
-        # The flipper adapter's source is `repo`; ha-ir needs none. `adapters`
-        # selects which repos to serve (default: both).
+        # repo + ref are per-device (URL path + `ref:`), never add-on options.
+        # `adapters` selects which sources are served (default: both).
         adapters = opts.get("adapters") or ["flipper", "ha-ir"]
         if isinstance(adapters, str):
             adapters = [a.strip() for a in adapters.split(",") if a.strip()]
-        serve_http(
-            port=int(opts.get("port", 9418)),
-            repo=opts.get("repo") or FLIPPER_REPO,
-            ref=opts.get("ref"),
-            adapters=tuple(adapters),
-        )
+        serve_http(port=int(opts.get("port", 9418)), adapters=tuple(adapters))
         return 0
 
     if args.serve:
@@ -587,9 +852,10 @@ def main(argv=None):
             out = args.out or _mirror_out(args.path)
             serve(port=args.port, ref=args.ref or "main", path=args.path, out=out, tx_id=args.tx_id, prefix=args.prefix)
         else:
-            # Path-less smart-HTTP service (the add-on) — one repo per adapter.
+            # Path-less smart-HTTP service (the add-on): source repo is the URL
+            # path, ref is the device's `ref:` — both per-device, built on demand.
             adapters = tuple(a.strip() for a in args.adapters.split(",") if a.strip())
-            serve_http(port=args.port, repo=args.repo, ref=args.ref, adapters=adapters)
+            serve_http(port=args.port, adapters=adapters)
         return 0
 
     if not args.file and not args.path:
