@@ -44,6 +44,24 @@ HA code sets. Reference the generated buttons, e.g. `button.press: tv_sony_bravi
 — ids are namespaced by the code-set path (see [Button ids](#button-ids)). Swap
 the `files:` path for any remote in the repo.
 
+### Several remotes — write the source once
+
+For more than one remote, write the `url:`/`ref:` once in a YAML anchor and reuse
+it per remote with the `<<: *irdb` merge key:
+
+```yaml
+.irdb: &irdb
+  url: http://<addon-host>:9418/Lucaslhm/Flipper-IRDB.git
+  ref: main
+
+packages:
+  sony_bravia:    { <<: *irdb, files: [TVs/Sony/Sony_Bravia.yaml] }
+  vizio_soundbar: { <<: *irdb, files: [SoundBars/Vizio/Vizio_SB4051-C0.yaml] }
+```
+
+A top-level key starting with `.` is ignored by ESPHome, so `.irdb:` just holds
+the anchor. Each remote still merges as its own sub-device.
+
 ### Complete, runnable device (copy-paste)
 
 A full M5 Atom Lite config — Wi-Fi, API, OTA, logger — whose front button toggles
