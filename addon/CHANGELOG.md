@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.3.0...v0.4.0) (2026-06-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* generated button ids use the canonical control as the key (e.g. ..._power -> ..._power_toggle, ..._vol_up -> ..._volume_up); update any button.press references accordingly.
+
+### Features
+
+* depend on homeops-ir-adapter + homeops-ir-canonical ([#21](https://github.com/HomeOps/esphome-ir-codegen/issues/21)) ([013ee60](https://github.com/HomeOps/esphome-ir-codegen/commit/013ee607403ab5aa2644a27984a8c0f9091779bf))
+
 ## [0.3.0](https://github.com/HomeOps/esphome-ir-codegen/compare/v0.2.1...v0.3.0) (2026-06-17)
 
 
