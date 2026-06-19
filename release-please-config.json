@@ -5,8 +5,7 @@
       "release-type": "simple",
       "changelog-path": "addon/CHANGELOG.md",
       "extra-files": ["addon/config.yaml"],
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true
+      "bump-minor-pre-major": true
     }
   }
 }
